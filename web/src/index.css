@@ -1,0 +1,159 @@
+@import 'tailwindcss';
+
+/* ============================================================
+   Guardian Design Tokens — 与 docs/SPEC.md §1 严格一致
+   ============================================================ */
+@theme {
+  /* 表面 */
+  --color-bg-app: #f7f8fa;
+  --color-bg-canvas: #e9ebef;
+  --color-surface: #ffffff;
+  --color-surface-soft: #fafbfc;
+  --color-border: #e5e8ec;
+  --color-divider: #edf0f3;
+
+  /* 文字 */
+  --color-text: #1a1d23;
+  --color-text-2: #5b6472;
+  --color-text-muted: #9aa2af;
+  --color-text-faint: #c9d2dc;
+
+  /* 主色 */
+  --color-primary: #2f6fed;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-soft: #eaf1fe;
+  --color-primary-line: #c5d8fb;
+
+  /* 安心青绿 */
+  --color-teal: #14b8a6;
+  --color-teal-deep: #0f9488;
+  --color-teal-soft: #f0faf8;
+  --color-teal-line: #bfe9e2;
+
+  /* 状态色 */
+  --color-success: #16a34a;
+  --color-success-soft: #e9f7ee;
+  --color-warning: #d97706;
+  --color-warning-soft: #fef3e2;
+  --color-warning-line: #fbd9b5;
+  --color-warning-deep: #b45309;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fdecec;
+
+  /* 圆角 */
+  --radius-card: 10px;
+  --radius-btn: 6px;
+  --radius-input: 6px;
+  --radius-pill: 9999px;
+  --radius-frame: 14px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+  --shadow-modal: 0 24px 48px rgba(16, 24, 40, 0.28);
+
+  /* 字体 */
+  --font-sans:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system,
+    'Segoe UI', Roboto, sans-serif;
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ============================================================
+   基础重置
+   ============================================================ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-app);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+.mono,
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 滚动条克制 */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-text-faint);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 焦点 ring */
+:where(button, a, input, textarea, select):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.25);
+}
+
+/* 轻量动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-in {
+  animation: fade-in 200ms ease-out;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-overlay-in {
+  animation: overlay-in 160ms ease-out;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-modal-in {
+  animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
