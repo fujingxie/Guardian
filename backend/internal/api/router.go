@@ -5,6 +5,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/guardian/backend/internal/agenthub"
+	"github.com/guardian/backend/internal/api/agentapi"
 	"github.com/guardian/backend/internal/api/handlers"
 	"github.com/guardian/backend/internal/store"
 )
@@ -13,6 +15,7 @@ type Deps struct {
 	AccessToken    string
 	ServersStore   *store.Servers
 	ConsoleBaseURL string
+	Hub            *agenthub.Hub
 }
 
 func NewRouter(deps Deps) *gin.Engine {
@@ -51,9 +54,11 @@ func NewRouter(deps Deps) *gin.Engine {
 	}
 
 	// Agent 协议路由（自带 agent token 校验，不进 access token 中间件）：
-	// agent := apiGroup.Group("/agent")
-	// agent.POST("/enroll", ...)
-	// agent.GET("/ws", ...)
+	if deps.Hub != nil && deps.ServersStore != nil {
+		ah := &agentapi.Handler{Servers: deps.ServersStore, Hub: deps.Hub}
+		apiGroup.POST("/agent/enroll", ah.Enroll)
+		apiGroup.GET("/agent/ws", ah.WebSocket)
+	}
 
 	return r
 }

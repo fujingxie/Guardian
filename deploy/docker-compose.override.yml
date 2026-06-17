@@ -1,0 +1,7 @@
+# 本地开发 override（自动被 docker compose 读取）：
+# - 只暴露 backend 给宿主机（agent 测试需要），postgres/redis 仅容器内访问。
+# - 真实部署用 `docker compose -f docker-compose.yml up`（不带 override）
+services:
+  backend:
+    ports:
+      - "18080:8080"
