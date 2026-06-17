@@ -1,0 +1,7 @@
+# web 容器内部 Caddy：只服务静态 + SPA fallback，不做 TLS（由外层 Caddy 终结）
+:80 {
+    root * /usr/share/caddy
+    encode zstd gzip
+    try_files {path} /index.html
+    file_server
+}
