@@ -64,8 +64,8 @@ services:
       - backend
       - web
     ports:
-      - "80:80"
-      - "443:443"
+      - "18081:80"
+    
     environment:
       GUARDIAN_DOMAIN: ${GUARDIAN_DOMAIN:-localhost}
     volumes:
