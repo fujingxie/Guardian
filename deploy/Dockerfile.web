@@ -7,7 +7,7 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web ./
 # 生产构建时关闭 MSW（运行时通过 env 标志）—— 这里同时构建一个真后端版本
-ENV VITE_USE_MOCKS=false
+ENV VITE_USE_MOCK=false
 RUN npm run build
 
 # ─── runtime ─────────────────────────────────────────────────────────────
