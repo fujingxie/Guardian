@@ -15,6 +15,11 @@ type Config struct {
 	ClaudeAPIKey   string        // 可选：人话兜底
 	TrialDuration  time.Duration // 死人开关默认倒计时（min 解析）
 	ConsoleBaseURL string        // 拼安装命令用，例如 https://guardian.example.com
+	SMTPHost       string
+	SMTPPort       string
+	SMTPUser       string
+	SMTPPass       string
+	SMTPFrom       string
 }
 
 func MustLoad() Config {
@@ -25,6 +30,11 @@ func MustLoad() Config {
 		RedisURL:       env("REDIS_URL", "redis://localhost:6379/0"),
 		ClaudeAPIKey:   env("ANTHROPIC_API_KEY", ""),
 		ConsoleBaseURL: env("CONSOLE_BASE_URL", "https://localhost"),
+		SMTPHost:       env("SMTP_HOST", ""),
+		SMTPPort:       env("SMTP_PORT", "587"),
+		SMTPUser:       env("SMTP_USER", ""),
+		SMTPPass:       env("SMTP_PASS", ""),
+		SMTPFrom:       env("SMTP_FROM", ""),
 	}
 
 	mins := env("TRIAL_MINUTES", "5")

@@ -9,10 +9,13 @@ package agenthub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/guardian/backend/internal/explain"
+	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
 	"github.com/redis/go-redis/v9"
 )
@@ -40,15 +43,21 @@ type entry struct {
 type Hub struct {
 	rds     *redis.Client
 	servers *store.Servers
+	alerts  *store.Alerts
+	explain *explain.Service
+	notify  *notify.Service
 
 	mu    sync.RWMutex
 	conns map[string]*entry // serverID -> entry
 }
 
-func New(rds *redis.Client, servers *store.Servers) *Hub {
+func New(rds *redis.Client, servers *store.Servers, alerts *store.Alerts, exp *explain.Service, notify *notify.Service) *Hub {
 	return &Hub{
 		rds:     rds,
 		servers: servers,
+		alerts:  alerts,
+		explain: exp,
+		notify:  notify,
 		conns:   make(map[string]*entry),
 	}
 }
@@ -72,11 +81,15 @@ func (h *Hub) Register(ctx context.Context, serverID string, c Conn) error {
 // Unregister 当连接断开时调用：摘掉 conn、置 offline。
 func (h *Hub) Unregister(ctx context.Context, serverID string) {
 	h.mu.Lock()
+	_, exists := h.conns[serverID]
 	delete(h.conns, serverID)
 	h.mu.Unlock()
 	_ = h.rds.Del(ctx, onlineKey(serverID)).Err()
 	if err := h.servers.SetStatus(ctx, serverID, "offline", time.Now().UTC()); err != nil {
 		log.Printf("[hub] mark offline %s: %v", serverID, err)
+	}
+	if exists {
+		go h.triggerOfflineAlert(context.Background(), serverID)
 	}
 }
 
@@ -145,4 +158,37 @@ func (h *Hub) sweepOnce(ctx context.Context) {
 		}
 	}
 	h.mu.Unlock()
+
+	// 触发离线告警和通知
+	for _, id := range stale {
+		go h.triggerOfflineAlert(context.Background(), id)
+	}
+}
+
+func (h *Hub) triggerOfflineAlert(ctx context.Context, serverID string) {
+	if h.alerts == nil || h.explain == nil {
+		return
+	}
+
+	serverName := serverID
+	if sv, err := h.servers.Get(ctx, serverID); err == nil && sv != nil {
+		serverName = sv.Name
+	}
+
+	plainMsg, err := h.explain.Translate(ctx, "offline", serverName, nil)
+	if err != nil {
+		plainMsg = fmt.Sprintf("服务器离线！Guardian 失去与服务器 %s 的长连接心跳，请检查服务器网络或 Agent 状态。", serverName)
+	}
+
+	ev, err := h.alerts.CreateAlert(ctx, serverID, "offline", "", nil, plainMsg, "high")
+	if err != nil {
+		log.Printf("[hub] save offline alert error: %v", err)
+		return
+	}
+	log.Printf("[hub] server %s offline alert saved: id=%s", serverID, ev.ID)
+
+	if h.notify != nil {
+		title := fmt.Sprintf("[%s] 紧急告警: 服务器离线", serverName)
+		h.notify.Send(ctx, title, plainMsg)
+	}
 }

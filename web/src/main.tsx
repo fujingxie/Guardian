@@ -4,12 +4,15 @@ import './index.css'
 import App from './App.tsx'
 
 async function bootstrap() {
-  const { worker } = await import('@/api/mocks/browser')
-  await worker.start({
-    onUnhandledRequest: 'bypass',
-    serviceWorker: { url: '/mockServiceWorker.js' },
-    quiet: true,
-  })
+  const useMock = import.meta.env.VITE_USE_MOCK !== 'false'
+  if (useMock) {
+    const { worker } = await import('@/api/mocks/browser')
+    await worker.start({
+      onUnhandledRequest: 'bypass',
+      serviceWorker: { url: '/mockServiceWorker.js' },
+      quiet: true,
+    })
+  }
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

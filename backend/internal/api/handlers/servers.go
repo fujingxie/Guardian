@@ -15,6 +15,7 @@ import (
 
 type ServersHandler struct {
 	Store          *store.Servers
+	Metrics        *store.Metrics
 	ConsoleBaseURL string // 例如 https://guardian.example.com —— 用于拼安装命令
 }
 
@@ -51,7 +52,7 @@ func (h *ServersHandler) Create(c *gin.Context) {
 			ID:     id,
 			Name:   name,
 			Status: "offline",
-		}),
+		}, store.MetricPoint{}),
 		"enrollmentToken": enrollment,
 		"installCommand":  cmd,
 	})
@@ -64,14 +65,27 @@ func (h *ServersHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
 		return
 	}
-	servers := make([]gin.H, 0, len(rows))
-	online, offline := 0, 0
+	ids := make([]string, 0, len(rows))
 	for i := range rows {
-		sv := apiServer(&rows[i])
+		ids = append(ids, rows[i].ID)
+	}
+	latest := map[string]store.MetricPoint{}
+	if h.Metrics != nil {
+		if m, err := h.Metrics.LastFor(c.Request.Context(), ids); err == nil {
+			latest = m
+		}
+	}
+
+	servers := make([]gin.H, 0, len(rows))
+	online, offline, protected := 0, 0, 0
+	for i := range rows {
+		sv := apiServer(&rows[i], latest[rows[i].ID])
 		servers = append(servers, sv)
-		if rows[i].Status == "online" {
+		switch rows[i].Status {
+		case "online":
 			online++
-		} else {
+			protected++ // T15 接入后用真实加固状态替换
+		default:
 			offline++
 		}
 	}
@@ -81,8 +95,8 @@ func (h *ServersHandler) List(c *gin.Context) {
 			"total":          len(rows),
 			"online":         online,
 			"offline":        offline,
-			"protected":      0, // T11+T15 接通后回填
-			"pending":        0,
+			"protected":      protected,
+			"pending":        0, // T11+T15 接通后回填
 			"pendingServers": 0,
 			"todayBlocked":   0,
 			"yesterdayDelta": 0,
@@ -102,12 +116,36 @@ func (h *ServersHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"server": apiServer(sv)})
+	var last store.MetricPoint
+	if h.Metrics != nil {
+		if m, err := h.Metrics.LastFor(c.Request.Context(), []string{id}); err == nil {
+			last = m[id]
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"server": apiServer(sv, last)})
 }
 
-// apiServer 把 store.Server 映射成前端 SPEC §5 中的 Server 形状。
-// 字段没有数据的（首次 enroll 前）走零值/空串，前端 SecurityBadge + Meter 已处理 offline 显示。
-func apiServer(sv *store.Server) gin.H {
+// apiServer 把 store.Server + 最新一条指标映射成前端 SPEC §5 的 Server 形状。
+func apiServer(sv *store.Server, last store.MetricPoint) gin.H {
+	metrics := gin.H{
+		"cpu":     0.0,
+		"mem":     0.0,
+		"disk":    0.0,
+		"netUp":   0.0,
+		"netDown": 0.0,
+	}
+	if !last.TS.IsZero() {
+		metrics["cpu"] = roundPct(last.CPUPct)
+		if last.MemTotal > 0 {
+			metrics["mem"] = roundPct(float64(last.MemUsed) / float64(last.MemTotal) * 100)
+		}
+		if last.DiskTotal > 0 {
+			metrics["disk"] = roundPct(float64(last.DiskUsed) / float64(last.DiskTotal) * 100)
+		}
+		metrics["netUp"] = roundMBs(last.NetTx)
+		metrics["netDown"] = roundMBs(last.NetRx)
+	}
+
 	out := gin.H{
 		"id":     sv.ID,
 		"name":   sv.Name,
@@ -119,23 +157,37 @@ func apiServer(sv *store.Server) gin.H {
 			}
 			return "danger"
 		}(),
-		"metrics": gin.H{
-			"cpu": 0, "mem": 0, "disk": 0, "netUp": 0, "netDown": 0,
-		},
+		"metrics":             metrics,
 		"attacksBlockedToday": 0,
 	}
 	if sv.LastSeenAt != nil {
 		out["lastSeen"] = sv.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z")
 	}
-	if sv.Distro != nil || sv.AgentVersion != nil {
+	if sv.Distro != nil || sv.AgentVersion != nil || last.UptimeSec > 0 {
 		out["system"] = gin.H{
 			"distro": strPtrOr(sv.Distro, "—"),
 			"kernel": "—",
-			"uptime": "—",
+			"uptime": formatUptime(last.UptimeSec),
 			"agent":  strPtrOr(sv.AgentVersion, "—"),
 		}
 	}
 	return out
+}
+
+func formatUptime(sec int64) string {
+	if sec <= 0 {
+		return "—"
+	}
+	days := sec / 86400
+	hours := (sec % 86400) / 3600
+	mins := (sec % 3600) / 60
+	if days > 0 {
+		return fmt.Sprintf("%d 天 %d 小时", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%d 小时 %d 分", hours, mins)
+	}
+	return fmt.Sprintf("%d 分钟", mins)
 }
 
 func strPtrOr(p *string, def string) string {

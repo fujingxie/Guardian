@@ -96,6 +96,24 @@ func (s *Servers) RotateToken(ctx context.Context, id, newHash, hostname, osName
 	return err
 }
 
+// UpdateDistro 用 agent 报上来的 distro 字符串覆盖（如果非空且变化）。
+func (s *Servers) UpdateDistro(ctx context.Context, id, distro string) error {
+	if distro == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE servers SET distro = $2 WHERE id = $1 AND distro IS DISTINCT FROM $2`, id, distro)
+	return err
+}
+
+// UpdateAdminIP 更新管理端的连接 IP。
+func (s *Servers) UpdateAdminIP(ctx context.Context, id, ip string) error {
+	if ip == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE servers SET current_admin_ip = $2 WHERE id = $1 AND current_admin_ip IS DISTINCT FROM $2`, id, ip)
+	return err
+}
+
 // SetStatus 写入在/离线 + last_seen_at。
 func (s *Servers) SetStatus(ctx context.Context, id, status string, lastSeen time.Time) error {
 	_, err := s.pool.Exec(ctx, `
@@ -114,6 +132,12 @@ func (s *Servers) SetOfflineByIDs(ctx context.Context, ids []string, now time.Ti
 		WHERE id = ANY($1) AND status = 'online'
 	`, ids, now)
 	return err
+}
+
+func (s *Servers) CountOnline(ctx context.Context) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM servers WHERE status = 'online'`).Scan(&count)
+	return count, err
 }
 
 func (s *Servers) ListOnlineIDs(ctx context.Context) ([]string, error) {

@@ -6,20 +6,44 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/guardian/backend/internal/agentauth"
 	"github.com/guardian/backend/internal/agenthub"
+	"github.com/guardian/backend/internal/explain"
+	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
 )
 
 type Handler struct {
-	Servers *store.Servers
-	Hub     *agenthub.Hub
+	Servers   *store.Servers
+	Metrics   *store.Metrics
+	Hardening *store.Hardening
+	Hub       *agenthub.Hub
+	Alerts    *store.Alerts
+	Explain   *explain.Service
+	Notify    *notify.Service
+}
+
+type metricsPayload struct {
+	TS        time.Time `json:"ts"`
+	CPUPct    float64   `json:"cpuPct"`
+	MemUsed   int64     `json:"memUsed"`
+	MemTotal  int64     `json:"memTotal"`
+	DiskUsed  int64     `json:"diskUsed"`
+	DiskTotal int64     `json:"diskTotal"`
+	NetRx     int64     `json:"netRx"`
+	NetTx     int64     `json:"netTx"`
+	Load1     float64   `json:"load1"`
+	UptimeSec int64     `json:"uptimeSec"`
+	Distro    string    `json:"distro"`
+	Kernel    string    `json:"kernel"`
 }
 
 type enrollReq struct {
@@ -135,11 +159,11 @@ func (h *Handler) WebSocket(c *gin.Context) {
 		case "heartbeat", "hello":
 			// 仅刷新在线 TTL（上面已做）
 		case "metrics":
-			// T9 落库
+			h.handleMetrics(ctx, sv.ID, env.Payload)
 		case "event":
-			// T16 落库
+			h.handleEvent(ctx, sv.ID, env.Payload)
 		case "job_result":
-			// T13 推进
+			h.handleJobResult(ctx, sv.ID, env.Payload)
 		default:
 			log.Printf("[agentapi] %s recv %s (ignored)", sv.ID, env.Type)
 		}
@@ -156,3 +180,173 @@ type wsConnAdapter struct{ *websocket.Conn }
 
 func (w *wsConnAdapter) WriteJSON(v any) error { return w.Conn.WriteJSON(v) }
 func (w *wsConnAdapter) Close() error          { return w.Conn.Close() }
+
+func (h *Handler) handleMetrics(ctx context.Context, serverID string, raw json.RawMessage) {
+	if h.Metrics == nil {
+		return
+	}
+	var p metricsPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Printf("[agentapi] %s bad metrics: %v", serverID, err)
+		return
+	}
+	if p.TS.IsZero() {
+		p.TS = time.Now().UTC()
+	}
+	point := store.MetricPoint{
+		ServerID:  serverID,
+		TS:        p.TS,
+		CPUPct:    p.CPUPct,
+		MemUsed:   p.MemUsed,
+		MemTotal:  p.MemTotal,
+		DiskUsed:  p.DiskUsed,
+		DiskTotal: p.DiskTotal,
+		NetRx:     p.NetRx,
+		NetTx:     p.NetTx,
+		Load1:     p.Load1,
+		UptimeSec: p.UptimeSec,
+	}
+	if err := h.Metrics.Insert(ctx, point); err != nil {
+		log.Printf("[agentapi] %s insert metrics: %v", serverID, err)
+	}
+	if p.Distro != "" {
+		_ = h.Servers.UpdateDistro(ctx, serverID, p.Distro)
+	}
+}
+
+type jobResultPayload struct {
+	JobID    string            `json:"jobId"`
+	Key      string            `json:"key"`
+	Status   string            `json:"status"` // success | failed
+	Snapshot map[string]string `json:"snapshot"`
+	Error    string            `json:"error"`
+}
+
+func (h *Handler) handleJobResult(ctx context.Context, serverID string, raw json.RawMessage) {
+	if h.Hardening == nil {
+		return
+	}
+	var p jobResultPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Printf("[agentapi] %s bad job_result: %v", serverID, err)
+		return
+	}
+
+	_, err := h.Hardening.GetJob(ctx, p.JobID)
+	if err != nil {
+		log.Printf("[agentapi] %s get job %s: %v", serverID, p.JobID, err)
+		return
+	}
+
+	if p.Status == "failed" {
+		log.Printf("[agentapi] %s job %s failed: %s", serverID, p.JobID, p.Error)
+		_ = h.Hardening.UpdateJobStatus(ctx, p.JobID, "failed", &p.Error)
+		return
+	}
+
+	// 成功逻辑
+	// 判定是否是高风险项目：ssh_no_password, ssh_port, ssh_no_root
+	isHighRisk := p.Key == "ssh_no_password" || p.Key == "ssh_port" || p.Key == "ssh_no_root"
+
+	if !isHighRisk {
+		// 普通加固项直接 applied
+		if err := h.Hardening.UpdateJobStatus(ctx, p.JobID, "applied", nil); err != nil {
+			log.Printf("[agentapi] %s update job %s: %v", serverID, p.JobID, err)
+		}
+		return
+	}
+
+	// 高风险项进入 5 分钟试运行
+	snapshotJSON, err := json.Marshal(p.Snapshot)
+	if err != nil {
+		log.Printf("[agentapi] %s marshal snapshot: %v", serverID, err)
+		return
+	}
+
+	snapshotID, err := h.Hardening.SaveSnapshot(ctx, serverID, p.JobID, snapshotJSON)
+	if err != nil {
+		log.Printf("[agentapi] %s save snapshot: %v", serverID, err)
+		return
+	}
+
+	// 默认试运行 5 分钟
+	deadline := time.Now().Add(5 * time.Minute)
+	if err := h.Hardening.UpdateJobToTrial(ctx, p.JobID, deadline, snapshotID); err != nil {
+		log.Printf("[agentapi] %s update job to trial %s: %v", serverID, p.JobID, err)
+	} else {
+		log.Printf("[agentapi] %s job %s entered trial, deadline: %s", serverID, p.JobID, deadline.Format(time.RFC3339))
+	}
+}
+
+type eventPayload struct {
+	TS        time.Time      `json:"ts"`
+	EventType string         `json:"eventType"`
+	SourceIP  string         `json:"sourceIp"`
+	Detail    map[string]any `json:"detail"`
+}
+
+func (h *Handler) handleEvent(ctx context.Context, serverID string, raw json.RawMessage) {
+	if h.Alerts == nil || h.Explain == nil {
+		return
+	}
+
+	var p eventPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Printf("[agentapi] %s bad event json: %v", serverID, err)
+		return
+	}
+
+	if p.TS.IsZero() {
+		p.TS = time.Now().UTC()
+	}
+
+	// 1. 调用 Explain 翻译
+	detailBytes, _ := json.Marshal(p.Detail)
+	plainMsg, err := h.Explain.Translate(ctx, p.EventType, p.SourceIP, detailBytes)
+	if err != nil {
+		log.Printf("[agentapi] %s explain event error: %v", serverID, err)
+		plainMsg = fmt.Sprintf("系统检测到安全事件（类型：%s），来源：%s。", p.EventType, p.SourceIP)
+	}
+
+	// 严重程度 severity (根据 eventType，通常封禁可以是 medium，其它 info)
+	severity := "info"
+	if p.EventType == "bruteforce_blocked" {
+		severity = "medium"
+	} else if p.EventType == "port_scan" {
+		severity = "medium"
+	} else if p.EventType == "critical_attack" {
+		severity = "high"
+	}
+
+	// 2. 落库 security_events
+	ev, err := h.Alerts.CreateAlert(ctx, serverID, p.EventType, p.SourceIP, p.Detail, plainMsg, severity)
+	if err != nil {
+		log.Printf("[agentapi] %s save security event to db error: %v", serverID, err)
+		return
+	}
+
+	log.Printf("[agentapi] %s security event saved: id=%s, type=%s, msg=%s", serverID, ev.ID, p.EventType, plainMsg)
+
+	// 3. 多通道通知推送
+	if h.Notify != nil {
+		serverName := serverID
+		if sv, err := h.Servers.Get(ctx, serverID); err == nil && sv != nil {
+			serverName = sv.Name
+		}
+		title := fmt.Sprintf("[%s] 安全告警: %s", serverName, formatEventTitle(p.EventType))
+		h.Notify.Send(ctx, title, plainMsg)
+	}
+}
+
+func formatEventTitle(evt string) string {
+	switch evt {
+	case "bruteforce_blocked":
+		return "拦截恶意登录"
+	case "new_login":
+		return "新登录提醒"
+	case "port_scan":
+		return "拦截端口扫描"
+	default:
+		return "安全警告"
+	}
+}

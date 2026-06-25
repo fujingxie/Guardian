@@ -11,14 +11,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/guardian/agent/internal/collector"
 	"github.com/guardian/agent/internal/conn"
+	"github.com/guardian/agent/internal/deadman"
 	"github.com/guardian/agent/internal/enroll"
+	"github.com/guardian/agent/internal/hardening"
 	"github.com/guardian/agent/internal/state"
 )
 
 const (
 	agentVersion      = "0.1.0"
 	heartbeatInterval = 15 * time.Second
+	collectInterval   = 10 * time.Second
 )
 
 func main() {
@@ -64,17 +68,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	col := collector.New()
+	execObj := hardening.NewExecutor()
+	dm := deadman.New()
+
+	// 启动本地死人开关守护
+	dm.StartMonitor(ctx, execObj)
+
 	loop := &conn.Loop{
 		ConsoleURL: st.ConsoleURL,
 		AgentToken: st.AgentToken,
 		Insecure:   *insecure,
-		OnConnect:  onConnect(ctx, st),
-		OnMessage:  onMessage,
+		OnConnect:  onConnect(ctx, st, col),
+		OnMessage:  onMessage(ctx, dm, execObj),
 	}
 	loop.Run(ctx)
 }
 
-func onConnect(ctx context.Context, st *state.State) func(send chan<- conn.Envelope) {
+func onConnect(ctx context.Context, st *state.State, col *collector.Collector) func(send chan<- conn.Envelope) {
 	return func(send chan<- conn.Envelope) {
 		hn, _ := os.Hostname()
 		hello, _ := json.Marshal(map[string]any{
@@ -86,7 +97,7 @@ func onConnect(ctx context.Context, st *state.State) func(send chan<- conn.Envel
 		})
 		safeSend(send, conn.Envelope{Type: "hello", Payload: hello})
 
-		// 每次成功连接，启动一个心跳 goroutine；连接断开后 send 阻塞 → 退出。
+		// 心跳
 		go func() {
 			t := time.NewTicker(heartbeatInterval)
 			defer t.Stop()
@@ -99,16 +110,138 @@ func onConnect(ctx context.Context, st *state.State) func(send chan<- conn.Envel
 						"ts": time.Now().UTC().Format(time.RFC3339),
 					})
 					if !safeSend(send, conn.Envelope{Type: "heartbeat", Payload: payload}) {
-						return // 通道阻塞表明连接已死，等下一次 OnConnect 重新拉起
+						return
 					}
 				}
 			}
 		}()
+
+		// 指标采集
+		go func() {
+			// 立刻上报一次，避免界面长时间空
+			if s, err := col.Sample(ctx); err == nil {
+				if payload, err := json.Marshal(s); err == nil {
+					safeSend(send, conn.Envelope{Type: "metrics", Payload: payload})
+				}
+			}
+			t := time.NewTicker(collectInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					s, err := col.Sample(ctx)
+					if err != nil {
+						continue
+					}
+					payload, err := json.Marshal(s)
+					if err != nil {
+						continue
+					}
+					if !safeSend(send, conn.Envelope{Type: "metrics", Payload: payload}) {
+						return
+					}
+				}
+			}
+		}()
+
+		// Fail2ban 日志监听
+		go collector.StartFail2banWatcher(ctx, send)
 	}
 }
 
-func onMessage(env conn.Envelope, _ chan<- conn.Envelope) {
-	log.Printf("[agent] recv %s", env.Type)
+func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Executor) func(env conn.Envelope, send chan<- conn.Envelope) {
+	return func(env conn.Envelope, send chan<- conn.Envelope) {
+		if env.Type != "command" {
+			log.Printf("[agent] recv unknown message type: %s", env.Type)
+			return
+		}
+
+		var cmd struct {
+			Cmd     string            `json:"cmd"`
+			JobID   string            `json:"jobId"`
+			Key     string            `json:"key"`
+			AdminIP string            `json:"adminIp"`
+			Files   map[string]string `json:"files"`
+		}
+
+		if err := json.Unmarshal(env.Payload, &cmd); err != nil {
+			log.Printf("[agent] parse command error: %v", err)
+			return
+		}
+
+		log.Printf("[agent] command received: %s (job: %s)", cmd.Cmd, cmd.JobID)
+
+		switch cmd.Cmd {
+		case "run_hardening":
+			go func() {
+				snapshot, err := execObj.Execute(ctx, cmd.Key, cmd.AdminIP)
+				if err != nil {
+					log.Printf("[agent] execute hardening %s failed: %v", cmd.Key, err)
+					reply := conn.Envelope{
+						Type: "job_result",
+						Payload: marshalJobResult(cmd.JobID, cmd.Key, "failed", nil, err.Error()),
+					}
+					safeSend(send, reply)
+					return
+				}
+
+				// 高风险项，写入本地 trial 状态
+				isHighRisk := cmd.Key == "ssh_no_password" || cmd.Key == "ssh_port" || cmd.Key == "ssh_no_root"
+				if isHighRisk {
+					// 试运行 5 分钟，自动计算回滚时间
+					rollbackAt := time.Now().Add(5 * time.Minute)
+					job := deadman.TrialJob{
+						JobID:      cmd.JobID,
+						Key:        cmd.Key,
+						RollbackAt: rollbackAt,
+						Files:      snapshot,
+					}
+					if err := dm.SetTrial(job); err != nil {
+						log.Printf("[agent] save trial job to disk: %v", err)
+					} else {
+						log.Printf("[agent] trial job %s recorded locally, rollback at %s", cmd.JobID, rollbackAt.Format(time.RFC3339))
+					}
+				}
+
+				reply := conn.Envelope{
+					Type: "job_result",
+					Payload: marshalJobResult(cmd.JobID, cmd.Key, "success", snapshot, ""),
+				}
+				safeSend(send, reply)
+			}()
+
+		case "confirm_hardening":
+			dm.Clear()
+			log.Printf("[agent] job %s confirmed by console, trial active cleared.", cmd.JobID)
+
+		case "rollback":
+			go func() {
+				log.Printf("[agent] command forced rollback for job: %s", cmd.JobID)
+				if err := execObj.Rollback(ctx, cmd.Files); err != nil {
+					log.Printf("[agent] forced rollback error: %v", err)
+				} else {
+					dm.Clear()
+					log.Printf("[agent] forced rollback completed, trial cleared.")
+				}
+			}()
+
+		default:
+			log.Printf("[agent] unknown cmd action: %s", cmd.Cmd)
+		}
+	}
+}
+
+func marshalJobResult(jobID, key, status string, snapshot map[string]string, errStr string) []byte {
+	out, _ := json.Marshal(map[string]any{
+		"jobId":    jobID,
+		"key":      key,
+		"status":   status,
+		"snapshot": snapshot,
+		"error":    errStr,
+	})
+	return out
 }
 
 // safeSend 非阻塞地往 send 投一个包；通道满则放弃（避免连接死掉的 goroutine 卡住）。

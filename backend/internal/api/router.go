@@ -8,12 +8,19 @@ import (
 	"github.com/guardian/backend/internal/agenthub"
 	"github.com/guardian/backend/internal/api/agentapi"
 	"github.com/guardian/backend/internal/api/handlers"
+	"github.com/guardian/backend/internal/explain"
+	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
 )
 
 type Deps struct {
 	AccessToken    string
 	ServersStore   *store.Servers
+	MetricsStore   *store.Metrics
+	HardeningStore *store.Hardening
+	AlertsStore    *store.Alerts
+	ExplainService *explain.Service
+	NotifyService  *notify.Service
 	ConsoleBaseURL string
 	Hub            *agenthub.Hub
 }
@@ -46,16 +53,52 @@ func NewRouter(deps Deps) *gin.Engine {
 	if deps.ServersStore != nil {
 		sh := &handlers.ServersHandler{
 			Store:          deps.ServersStore,
+			Metrics:        deps.MetricsStore,
 			ConsoleBaseURL: deps.ConsoleBaseURL,
 		}
 		protected.POST("/servers", sh.Create)
 		protected.GET("/servers", sh.List)
 		protected.GET("/servers/:id", sh.Get)
 	}
+	if deps.MetricsStore != nil {
+		mh := &handlers.MetricsHandler{Store: deps.MetricsStore}
+		protected.GET("/servers/:id/metrics", mh.List)
+	}
+	if deps.HardeningStore != nil {
+		hh := &handlers.HardeningHandler{
+			Store:   deps.HardeningStore,
+			Servers: deps.ServersStore,
+			Hub:     deps.Hub,
+		}
+		protected.GET("/servers/:id/hardening", hh.GetHardening)
+		protected.POST("/servers/:id/hardening/:key/apply", hh.ApplyHardening)
+		protected.POST("/servers/:id/hardening/:key/confirm", hh.ConfirmHardening)
+		protected.POST("/servers/:id/hardening/:key/rollback", hh.RollbackHardening)
+	}
+
+	if deps.AlertsStore != nil && deps.NotifyService != nil {
+		al := &handlers.AlertsHandler{
+			Store:         deps.AlertsStore,
+			Servers:       deps.ServersStore,
+			NotifyService: deps.NotifyService,
+		}
+		protected.GET("/servers/:id/alerts", al.GetAlerts)
+		protected.GET("/settings/notifications", al.GetSettings)
+		protected.PUT("/settings/notifications", al.UpdateSettings)
+		protected.POST("/settings/notifications/test", al.TestNotification)
+	}
 
 	// Agent 协议路由（自带 agent token 校验，不进 access token 中间件）：
 	if deps.Hub != nil && deps.ServersStore != nil {
-		ah := &agentapi.Handler{Servers: deps.ServersStore, Hub: deps.Hub}
+		ah := &agentapi.Handler{
+			Servers:   deps.ServersStore,
+			Metrics:   deps.MetricsStore,
+			Hardening: deps.HardeningStore,
+			Hub:       deps.Hub,
+			Alerts:    deps.AlertsStore,
+			Explain:   deps.ExplainService,
+			Notify:    deps.NotifyService,
+		}
 		apiGroup.POST("/agent/enroll", ah.Enroll)
 		apiGroup.GET("/agent/ws", ah.WebSocket)
 	}
