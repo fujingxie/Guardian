@@ -48,7 +48,7 @@ func main() {
 	hardening := store.NewHardening(pool)
 	alerts := store.NewAlerts(pool)
 
-	explainService := explain.New(rds, cfg.ClaudeAPIKey)
+	explainService := explain.New(rds, cfg.ClaudeAPIKey, cfg.DeepSeekAPIKey)
 	notifyService := notify.New(alerts, notify.SMTPConfig{
 		Host: cfg.SMTPHost,
 		Port: cfg.SMTPPort,

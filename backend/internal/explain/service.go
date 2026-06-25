@@ -17,15 +17,17 @@ import (
 )
 
 type Service struct {
-	rds          *redis.Client
-	claudeAPIKey string
-	httpClient   *http.Client
+	rds            *redis.Client
+	claudeAPIKey   string
+	deepseekAPIKey string
+	httpClient     *http.Client
 }
 
-func New(rds *redis.Client, claudeAPIKey string) *Service {
+func New(rds *redis.Client, claudeAPIKey, deepseekAPIKey string) *Service {
 	return &Service{
-		rds:          rds,
-		claudeAPIKey: claudeAPIKey,
+		rds:            rds,
+		claudeAPIKey:   claudeAPIKey,
+		deepseekAPIKey: deepseekAPIKey,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -42,7 +44,7 @@ func (s *Service) Translate(ctx context.Context, eventType, sourceIP string, det
 		return msg, nil
 	}
 
-	// 2. 动态解释：如果配置了 Claude API Key，则使用 Claude，否则使用静态/默认兜底
+	// 2. 动态解释：如果配置了 DeepSeek 或 Claude API Key，进行动态解释，否则使用静态/默认兜底
 	// 拼接输入信息，用 MD5 生成 Redis 缓存键
 	inputStr := fmt.Sprintf("%s:%s:%s", eventType, sourceIP, string(detailRaw))
 	h := md5.Sum([]byte(inputStr))
@@ -56,7 +58,19 @@ func (s *Service) Translate(ctx context.Context, eventType, sourceIP string, det
 	}
 
 	explanation := ""
-	if s.claudeAPIKey != "" {
+	if s.deepseekAPIKey != "" {
+		var err error
+		explanation, err = s.askDeepSeek(ctx, eventType, sourceIP, string(detailRaw))
+		if err != nil {
+			log.Printf("[explain] DeepSeek API error: %v, falling back to default", err)
+			explanation = s.defaultFallback(eventType, sourceIP, detailRaw)
+		} else {
+			// 缓存，TTL 24小时
+			if s.rds != nil && explanation != "" {
+				_ = s.rds.Set(ctx, cacheKey, explanation, 24*time.Hour).Err()
+			}
+		}
+	} else if s.claudeAPIKey != "" {
 		var err error
 		explanation, err = s.askClaude(ctx, eventType, sourceIP, string(detailRaw))
 		if err != nil {
@@ -184,4 +198,71 @@ func (s *Service) askClaude(ctx context.Context, eventType, sourceIP, detailStr 
 	}
 
 	return "", fmt.Errorf("empty response content")
+}
+
+type deepSeekMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type deepSeekRequest struct {
+	Model    string            `json:"model"`
+	Messages []deepSeekMessage `json:"messages"`
+}
+
+type deepSeekChoice struct {
+	Message deepSeekMessage `json:"message"`
+}
+
+type deepSeekResponse struct {
+	Choices []deepSeekChoice `json:"choices"`
+}
+
+func (s *Service) askDeepSeek(ctx context.Context, eventType, sourceIP, detailStr string) (string, error) {
+	prompt := fmt.Sprintf(
+		"你是一个 Linux 系统安全专家。请用一句简短、容易理解的中文大白话（不超过30字）解释以下系统安全事件：类型是 %s，IP 是 %s，详情是 %s。请直接输出解释文案，不要有任何前缀、后缀、引号或额外解释。",
+		eventType, sourceIP, detailStr,
+	)
+
+	reqPayload := deepSeekRequest{
+		Model: "deepseek-chat",
+		Messages: []deepSeekMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	rawReq, err := json.Marshal(reqPayload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.deepseek.com/chat/completions", bytes.NewBuffer(rawReq))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.deepseekAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	var respPayload deepSeekResponse
+	if err := json.NewDecoder(resp.Body).Decode(&respPayload); err != nil {
+		return "", err
+	}
+
+	if len(respPayload.Choices) > 0 {
+		return strings.TrimSpace(respPayload.Choices[0].Message.Content), nil
+	}
+
+	return "", fmt.Errorf("empty choices content")
 }

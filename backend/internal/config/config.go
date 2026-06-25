@@ -20,6 +20,7 @@ type Config struct {
 	SMTPUser       string
 	SMTPPass       string
 	SMTPFrom       string
+	DeepSeekAPIKey string
 }
 
 func MustLoad() Config {
@@ -35,6 +36,7 @@ func MustLoad() Config {
 		SMTPUser:       env("SMTP_USER", ""),
 		SMTPPass:       env("SMTP_PASS", ""),
 		SMTPFrom:       env("SMTP_FROM", ""),
+		DeepSeekAPIKey: env("DEEPSEEK_API_KEY", ""),
 	}
 
 	mins := env("TRIAL_MINUTES", "5")

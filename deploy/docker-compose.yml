@@ -44,6 +44,7 @@ services:
       DATABASE_URL: "postgres://${POSTGRES_USER:-guardian}:${POSTGRES_PASSWORD:-guardian}@postgres:5432/${POSTGRES_DB:-guardian}?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       TRIAL_MINUTES: ${TRIAL_MINUTES:-5}
     expose:
       - "8080"
