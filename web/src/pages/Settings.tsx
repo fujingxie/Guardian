@@ -191,6 +191,45 @@ export default function SettingsPage() {
           )}
         </Card>
 
+        {/* 阈值告警配置 */}
+        <Card padded={false} className="mb-6">
+          <div className="border-b border-[var(--color-divider)] px-6 py-4">
+            <div className="text-[16px] font-semibold">阈值告警配置</div>
+            <div className="mt-0.5 text-[13px] text-[var(--color-text-2)]">
+              当服务器资源用量持续超过阈值时，自动产生告警并推送通知。
+            </div>
+          </div>
+          {settings ? (
+            <div className="grid grid-cols-1 gap-4 px-6 py-5">
+              <ThresholdRow
+                label="CPU"
+                pctValue={settings.notify.cpuPctThreshold ?? 85}
+                durValue={settings.notify.cpuDurationMin ?? 5}
+                onPctChange={(v) => patchChannel('cpuPctThreshold' as any, v)}
+                onDurChange={(v) => patchChannel('cpuDurationMin' as any, v)}
+                durUnit="分钟"
+              />
+              <ThresholdRow
+                label="内存"
+                pctValue={settings.notify.memPctThreshold ?? 95}
+                durValue={settings.notify.memDurationMin ?? 3}
+                onPctChange={(v) => patchChannel('memPctThreshold' as any, v)}
+                onDurChange={(v) => patchChannel('memDurationMin' as any, v)}
+                durUnit="分钟"
+              />
+              <ThresholdRow
+                label="磁盘"
+                pctValue={settings.notify.diskPctThreshold ?? 95}
+                onPctChange={(v) => patchChannel('diskPctThreshold' as any, v)}
+              />
+            </div>
+          ) : (
+            <div className="px-6 py-6 text-[13px] text-[var(--color-text-muted)]">
+              加载中…
+            </div>
+          )}
+        </Card>
+
         {/* 访问口令 */}
         <Card padded={false} className="mb-6">
           <div className="border-b border-[var(--color-divider)] px-6 py-4">
@@ -273,6 +312,57 @@ function PasswordRow({
         onChange={(e) => onChange(e.target.value)}
         className="flex-1 font-mono"
       />
+    </div>
+  )
+}
+
+function ThresholdRow({
+  label,
+  pctValue,
+  durValue,
+  onPctChange,
+  onDurChange,
+  durUnit,
+}: {
+  label: string
+  pctValue: number
+  durValue?: number
+  onPctChange: (v: number) => void
+  onDurChange?: (v: number) => void
+  durUnit?: string
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-[56px] flex-shrink-0 text-[14px] font-medium">{label}</div>
+      <span className="text-[13px] text-[var(--color-text-2)]">超过</span>
+      <Input
+        type="number"
+        value={String(pctValue)}
+        onChange={(e) => {
+          const v = parseFloat(e.target.value)
+          if (!isNaN(v) && v > 0 && v <= 100) onPctChange(v)
+        }}
+        className="w-[72px] text-center tabular-num"
+      />
+      <span className="text-[13px] text-[var(--color-text-2)]">%</span>
+      {durValue != null && onDurChange && (
+        <>
+          <span className="text-[13px] text-[var(--color-text-2)]">持续</span>
+          <Input
+            type="number"
+            value={String(durValue)}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10)
+              if (!isNaN(v) && v > 0 && v <= 60) onDurChange(v)
+            }}
+            className="w-[60px] text-center tabular-num"
+          />
+          <span className="text-[13px] text-[var(--color-text-2)]">{durUnit ?? '分钟'}</span>
+        </>
+      )}
+      {durValue == null && (
+        <span className="text-[12px] text-[var(--color-text-muted)]">（立即告警）</span>
+      )}
     </div>
   )
 }

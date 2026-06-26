@@ -255,3 +255,101 @@ func (h *Hardening) CleanTimeoutPendingJobs(ctx context.Context) (int64, error) 
 	}
 	return tag.RowsAffected(), nil
 }
+
+// GetAppliedCount 获取特定服务器已应用加固项的数量
+func (h *Hardening) GetAppliedCount(ctx context.Context, serverID string) (int, error) {
+	row := h.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE status = 'applied') AS applied_count
+		FROM (
+			SELECT DISTINCT ON (item_key) status
+			FROM hardening_jobs
+			WHERE server_id = $1
+			ORDER BY item_key, created_at DESC
+		) AS latest_jobs
+	`, serverID)
+	var count int
+	err := row.Scan(&count)
+	return count, err
+}
+
+// GetAppliedCounts 批量获取所有服务器已应用加固项的数量
+func (h *Hardening) GetAppliedCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := h.pool.Query(ctx, `
+		SELECT server_id, COUNT(*) FILTER (WHERE status = 'applied') AS applied_count
+		FROM (
+			SELECT DISTINCT ON (server_id, item_key) server_id, status
+			FROM hardening_jobs
+			ORDER BY server_id, item_key, created_at DESC
+		) AS latest_jobs
+		GROUP BY server_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var sID string
+		var count int
+		if err := rows.Scan(&sID, &count); err != nil {
+			return nil, err
+		}
+		counts[sID] = count
+	}
+	return counts, rows.Err()
+}
+
+// ServerHardeningStats 存放单台服务器的加固状态计数
+type ServerHardeningStats struct {
+	Applied int
+	Trial   int
+}
+
+// GetHardeningStats 批量获取所有服务器的加固项状态数量 (applied / trial)
+func (h *Hardening) GetHardeningStats(ctx context.Context) (map[string]ServerHardeningStats, error) {
+	rows, err := h.pool.Query(ctx, `
+		SELECT server_id, 
+		       COUNT(*) FILTER (WHERE status = 'applied') AS applied_count,
+		       COUNT(*) FILTER (WHERE status = 'trial') AS trial_count
+		FROM (
+			SELECT DISTINCT ON (server_id, item_key) server_id, status
+			FROM hardening_jobs
+			ORDER BY server_id, item_key, created_at DESC
+		) AS latest_jobs
+		GROUP BY server_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make(map[string]ServerHardeningStats)
+	for rows.Next() {
+		var sID string
+		var s ServerHardeningStats
+		if err := rows.Scan(&sID, &s.Applied, &s.Trial); err != nil {
+			return nil, err
+		}
+		stats[sID] = s
+	}
+	return stats, rows.Err()
+}
+
+// GetHardeningStatsForServer 获取特定服务器的加固项状态数量 (applied / trial)
+func (h *Hardening) GetHardeningStatsForServer(ctx context.Context, serverID string) (ServerHardeningStats, error) {
+	row := h.pool.QueryRow(ctx, `
+		SELECT 
+		       COUNT(*) FILTER (WHERE status = 'applied') AS applied_count,
+		       COUNT(*) FILTER (WHERE status = 'trial') AS trial_count
+		FROM (
+			SELECT DISTINCT ON (item_key) status
+			FROM hardening_jobs
+			WHERE server_id = $1
+			ORDER BY item_key, created_at DESC
+		) AS latest_jobs
+	`, serverID)
+	var s ServerHardeningStats
+	err := row.Scan(&s.Applied, &s.Trial)
+	return s, err
+}

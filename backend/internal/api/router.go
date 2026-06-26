@@ -11,6 +11,8 @@ import (
 	"github.com/guardian/backend/internal/explain"
 	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
+	"github.com/guardian/backend/internal/threshold"
+	"github.com/redis/go-redis/v9"
 )
 
 type Deps struct {
@@ -23,6 +25,8 @@ type Deps struct {
 	NotifyService  *notify.Service
 	ConsoleBaseURL string
 	Hub            *agenthub.Hub
+	InventoryStore *store.InventoryStore
+	Redis          *redis.Client
 }
 
 func NewRouter(deps Deps) *gin.Engine {
@@ -61,6 +65,8 @@ func NewRouter(deps Deps) *gin.Engine {
 		sh := &handlers.ServersHandler{
 			Store:          deps.ServersStore,
 			Metrics:        deps.MetricsStore,
+			Hardening:      deps.HardeningStore,
+			Alerts:         deps.AlertsStore,
 			ConsoleBaseURL: deps.ConsoleBaseURL,
 			Hub:            deps.Hub,
 		}
@@ -98,21 +104,36 @@ func NewRouter(deps Deps) *gin.Engine {
 			NotifyService: deps.NotifyService,
 		}
 		protected.GET("/servers/:id/alerts", al.GetAlerts)
+		protected.GET("/servers/:id/alerts/timeline", al.GetAlertsTimeline)
+		protected.GET("/servers/:id/alerts/stats", al.GetAlertsStats)
 		protected.GET("/settings/notifications", al.GetSettings)
 		protected.PUT("/settings/notifications", al.UpdateSettings)
 		protected.POST("/settings/notifications/test", al.TestNotification)
 	}
 
+	if deps.InventoryStore != nil {
+		ih := &handlers.InventoryHandler{Store: deps.InventoryStore}
+		protected.GET("/servers/:id/inventory", ih.GetInventory)
+	}
+
 	// Agent 协议路由（自带 agent token 校验，不进 access token 中间件）：
 	if deps.Hub != nil && deps.ServersStore != nil {
+		var checker *threshold.Checker
+		if deps.Redis != nil && deps.AlertsStore != nil {
+			checker = threshold.NewChecker(deps.Redis, deps.AlertsStore, deps.NotifyService)
+		}
+
 		ah := &agentapi.Handler{
-			Servers:   deps.ServersStore,
-			Metrics:   deps.MetricsStore,
-			Hardening: deps.HardeningStore,
-			Hub:       deps.Hub,
-			Alerts:    deps.AlertsStore,
-			Explain:   deps.ExplainService,
-			Notify:    deps.NotifyService,
+			Servers:          deps.ServersStore,
+			Metrics:          deps.MetricsStore,
+			Hardening:        deps.HardeningStore,
+			Hub:              deps.Hub,
+			Alerts:           deps.AlertsStore,
+			Explain:          deps.ExplainService,
+			Notify:           deps.NotifyService,
+			Inventory:        deps.InventoryStore,
+			Redis:            deps.Redis,
+			ThresholdChecker: checker,
 		}
 		apiGroup.POST("/agent/enroll", ah.Enroll)
 		apiGroup.GET("/agent/ws", ah.WebSocket)

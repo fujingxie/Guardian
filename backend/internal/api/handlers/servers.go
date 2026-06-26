@@ -20,6 +20,8 @@ import (
 type ServersHandler struct {
 	Store          *store.Servers
 	Metrics        *store.Metrics
+	Hardening      *store.Hardening
+	Alerts         *store.Alerts
 	ConsoleBaseURL string // 例如 https://guardian.example.com —— 用于拼安装命令
 	Hub            *agenthub.Hub
 }
@@ -59,7 +61,7 @@ func (h *ServersHandler) Create(c *gin.Context) {
 			ID:     id,
 			Name:   name,
 			Status: "offline",
-		}, store.MetricPoint{}),
+		}, store.MetricPoint{}, 0, 0, 0, 0),
 		"enrollmentToken": enrollment,
 		"installCommand":  cmd,
 	})
@@ -83,15 +85,54 @@ func (h *ServersHandler) List(c *gin.Context) {
 		}
 	}
 
+	// 批量获取每台服务器的加固状态计数
+	hardeningStats := map[string]store.ServerHardeningStats{}
+	var hardeningTotal int
+	if h.Hardening != nil {
+		if items, err := h.Hardening.ListItems(c.Request.Context()); err == nil {
+			hardeningTotal = len(items)
+		}
+		if hs, err := h.Hardening.GetHardeningStats(c.Request.Context()); err == nil {
+			hardeningStats = hs
+		}
+	}
+
+	// 批量获取每台服务器今天拦截的攻击事件数，并加总
+	todayBlockedCounts := map[string]int{}
+	var todayBlocked int
+	if h.Alerts != nil {
+		if tc, err := h.Alerts.GetTodayBlockedCounts(c.Request.Context()); err == nil {
+			todayBlockedCounts = tc
+		}
+	}
+	for _, cnt := range todayBlockedCounts {
+		todayBlocked += cnt
+	}
+
 	servers := make([]gin.H, 0, len(rows))
-	online, offline, protected := 0, 0, 0
+	online, offline, protectedCount, pending, pendingServers := 0, 0, 0, 0, 0
 	for i := range rows {
-		sv := apiServer(&rows[i], latest[rows[i].ID])
+		hs := hardeningStats[rows[i].ID]
+		applied := hs.Applied
+		trial := hs.Trial
+		blocked := todayBlockedCounts[rows[i].ID]
+
+		sv := apiServer(&rows[i], latest[rows[i].ID], applied, trial, hardeningTotal, blocked)
 		servers = append(servers, sv)
 		switch rows[i].Status {
 		case "online":
 			online++
-			protected++ // T15 接入后用真实加固状态替换
+			if hardeningTotal > 0 && applied == hardeningTotal {
+				protectedCount++
+			} else if applied > 0 || trial > 0 {
+				pending += hardeningTotal - applied - trial
+				pendingServers++
+			} else {
+				pending += hardeningTotal
+				if hardeningTotal > 0 {
+					pendingServers++
+				}
+			}
 		default:
 			offline++
 		}
@@ -102,10 +143,10 @@ func (h *ServersHandler) List(c *gin.Context) {
 			"total":          len(rows),
 			"online":         online,
 			"offline":        offline,
-			"protected":      protected,
-			"pending":        0, // T11+T15 接通后回填
-			"pendingServers": 0,
-			"todayBlocked":   0,
+			"protected":      protectedCount,
+			"pending":        pending,
+			"pendingServers": pendingServers,
+			"todayBlocked":   todayBlocked,
 			"yesterdayDelta": 0,
 		},
 	})
@@ -129,11 +170,27 @@ func (h *ServersHandler) Get(c *gin.Context) {
 			last = m[id]
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"server": apiServer(sv, last)})
+	var applied, trial, total int
+	if h.Hardening != nil {
+		if items, err := h.Hardening.ListItems(c.Request.Context()); err == nil {
+			total = len(items)
+		}
+		if stats, err := h.Hardening.GetHardeningStatsForServer(c.Request.Context(), id); err == nil {
+			applied = stats.Applied
+			trial = stats.Trial
+		}
+	}
+	var blockedToday int
+	if h.Alerts != nil {
+		if count, err := h.Alerts.GetTodayBlockedCountForServer(c.Request.Context(), id); err == nil {
+			blockedToday = count
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"server": apiServer(sv, last, applied, trial, total, blockedToday)})
 }
 
 // apiServer 把 store.Server + 最新一条指标映射成前端 SPEC §5 的 Server 形状。
-func apiServer(sv *store.Server, last store.MetricPoint) gin.H {
+func apiServer(sv *store.Server, last store.MetricPoint, hardeningApplied, hardeningTrial, hardeningTotal int, attacksBlockedToday int) gin.H {
 	metrics := gin.H{
 		"cpu":     0.0,
 		"mem":     0.0,
@@ -153,19 +210,26 @@ func apiServer(sv *store.Server, last store.MetricPoint) gin.H {
 		metrics["netDown"] = roundMBs(last.NetRx)
 	}
 
+	security := "danger"
+	if sv.Status == "online" {
+		if hardeningTotal > 0 && hardeningApplied == hardeningTotal {
+			security = "protected"
+		} else if hardeningApplied > 0 || hardeningTrial > 0 {
+			security = "pending"
+		}
+	}
+
 	out := gin.H{
-		"id":     sv.ID,
-		"name":   sv.Name,
-		"ip":     strPtrOr(sv.CurrentAdminIP, ""),
-		"status": sv.Status,
-		"security": func() string {
-			if sv.Status == "online" {
-				return "protected"
-			}
-			return "danger"
-		}(),
+		"id":                  sv.ID,
+		"name":                sv.Name,
+		"ip":                  strPtrOr(sv.CurrentAdminIP, ""),
+		"status":              sv.Status,
+		"security":            security,
 		"metrics":             metrics,
-		"attacksBlockedToday": 0,
+		"attacksBlockedToday": attacksBlockedToday,
+		"hardeningApplied":    hardeningApplied,
+		"hardeningTrial":      hardeningTrial,
+		"hardeningTotal":      hardeningTotal,
 	}
 	if sv.LastSeenAt != nil {
 		out["lastSeen"] = sv.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z")

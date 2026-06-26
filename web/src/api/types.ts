@@ -28,6 +28,9 @@ export interface Server {
   attacksBlockedToday: number
   lastSeen?: string
   system?: ServerSystem
+  hardeningApplied?: number
+  hardeningTrial?: number
+  hardeningTotal?: number
 }
 
 export type HardeningKey =
@@ -54,7 +57,7 @@ export interface HardeningItem {
   status?: 'idle' | 'applying' | 'trial' | 'failed'
 }
 
-export type AlertKind = 'bruteforce' | 'port_scan' | 'new_login' | 'unknown'
+export type AlertKind = 'bruteforce' | 'port_scan' | 'new_login' | 'metric_threshold' | 'offline' | 'unknown'
 export type Severity = 'high' | 'medium' | 'info'
 
 export interface Alert {
@@ -62,6 +65,7 @@ export interface Alert {
   ts: string
   kind: AlertKind
   sourceIp?: string
+  country?: string
   severity: Severity
   read: boolean
   resolved: boolean
@@ -87,6 +91,11 @@ export interface NotifySettings {
     telegram: boolean
     serverChan: boolean
   }
+  cpuPctThreshold?: number
+  cpuDurationMin?: number
+  memPctThreshold?: number
+  memDurationMin?: number
+  diskPctThreshold?: number
 }
 
 export interface Settings {
@@ -104,3 +113,53 @@ export interface SummaryStats {
   todayBlocked: number
   yesterdayDelta: number
 }
+
+export interface TimelinePoint {
+  date: string
+  high: number
+  medium: number
+  info: number
+}
+
+export interface AttackerIP {
+  ip: string
+  country: string
+  count: number
+}
+
+export interface CountryStats {
+  country: string
+  count: number
+}
+
+export interface AlertStats {
+  topIPs: AttackerIP[]
+  countries: CountryStats[]
+}
+
+export interface PortItem {
+  port: number
+  proto: string
+  addr: string
+  pid?: number
+  process?: string
+}
+
+export interface ServiceItem {
+  name: string
+  description: string
+  active: string
+}
+
+export interface PackageItem {
+  name: string
+  version: string
+}
+
+export interface InventoryData {
+  ts: string
+  ports: PortItem[]
+  services: ServiceItem[]
+  packages: PackageItem[]
+}
+

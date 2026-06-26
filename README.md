@@ -102,3 +102,18 @@ docker compose up -d
 ```bash
 journalctl -u guardian-agent -f
 ```
+
+## 🧪 运行单元与集成测试
+
+要想完整运行系统的所有测试（包括长连接并发、安全加固回滚、告警阈值状态机与 Redis 去重等集成测试），请在测试环境下提供对应的 Postgres 数据库和 Redis 连接，并运行如下命令：
+
+```bash
+# 进入后端工程目录
+cd backend
+
+# 指定数据库和 Redis 环境变量并执行测试
+DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian?sslmode=disable \
+REDIS_URL=redis://localhost:6379/0 \
+go test -v ./...
+```
+

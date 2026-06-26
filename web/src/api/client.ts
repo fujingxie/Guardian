@@ -1,10 +1,13 @@
 import type {
   Alert,
+  AlertStats,
   HardeningItem,
   MetricPoint,
   Server,
   Settings,
   SummaryStats,
+  TimelinePoint,
+  InventoryData,
 } from './types'
 
 const TOKEN_KEY = 'guardian.accessToken'
@@ -102,6 +105,12 @@ export const api = {
   getAlerts: (id: string) =>
     request<{ alerts: Alert[] }>(`/api/servers/${id}/alerts`),
 
+  getAlertsTimeline: (id: string) =>
+    request<{ timeline: TimelinePoint[] }>(`/api/servers/${id}/alerts/timeline`),
+
+  getAlertsStats: (id: string) =>
+    request<AlertStats>(`/api/servers/${id}/alerts/stats`),
+
   getSettings: () => request<Settings>('/api/settings/notifications'),
 
   updateSettings: (s: Settings) =>
@@ -136,6 +145,9 @@ export const api = {
     request<{ ok: boolean }>(`/api/servers/${id}`, {
       method: 'DELETE',
     }),
+
+  getInventory: (id: string) =>
+    request<InventoryData>(`/api/servers/${id}/inventory`),
 }
 
 export { HttpError }

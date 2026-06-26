@@ -23,6 +23,7 @@ type AlertResp struct {
 	TS       string  `json:"ts"`
 	Kind     string  `json:"kind"`
 	SourceIP *string `json:"sourceIp,omitempty"`
+	Country  *string `json:"country,omitempty"`
 	Severity string  `json:"severity"`
 	Read     bool    `json:"read"`
 	Resolved bool    `json:"resolved"`
@@ -78,6 +79,22 @@ func (h *AlertsHandler) GetSettings(c *gin.Context) {
 	for _, key := range []string{"email", "telegram", "serverChan"} {
 		if _, ok := channels[key]; !ok {
 			channels[key] = ""
+		}
+	}
+
+	// 补全默认阈值字段，避免前端解构或读取到空值
+	for _, kv := range []struct {
+		key string
+		val any
+	}{
+		{"cpuPctThreshold", 85.0},
+		{"cpuDurationMin", 5},
+		{"memPctThreshold", 95.0},
+		{"memDurationMin", 3},
+		{"diskPctThreshold", 95.0},
+	} {
+		if _, ok := channels[kv.key]; !ok {
+			channels[kv.key] = kv.val
 		}
 	}
 
@@ -177,8 +194,9 @@ func (h *AlertsHandler) TestNotification(c *gin.Context) {
 
 func formatAlert(ev store.SecurityEvent) AlertResp {
 	kind := ev.Type
-	// 前端只接收 'bruteforce' | 'port_scan' | 'new_login' | 'unknown'
-	if kind != "bruteforce" && kind != "port_scan" && kind != "new_login" && kind != "unknown" {
+	if kind == "cpu_usage_high" || kind == "mem_usage_high" || kind == "disk_usage_high" {
+		kind = "metric_threshold"
+	} else if kind != "bruteforce" && kind != "port_scan" && kind != "new_login" && kind != "offline" && kind != "unknown" {
 		if kind == "bruteforce_blocked" {
 			kind = "bruteforce"
 		} else {
@@ -196,6 +214,12 @@ func formatAlert(ev store.SecurityEvent) AlertResp {
 		title = "端口扫描告警"
 	case "offline":
 		title = "服务器离线告警"
+	case "cpu_usage_high":
+		title = "CPU使用率告警"
+	case "mem_usage_high":
+		title = "内存使用率告警"
+	case "disk_usage_high":
+		title = "磁盘使用率告警"
 	}
 
 	return AlertResp{
@@ -203,10 +227,33 @@ func formatAlert(ev store.SecurityEvent) AlertResp {
 		TS:       ev.CreatedAt.Format(time.RFC3339),
 		Kind:     kind,
 		SourceIP: ev.SourceIP,
+		Country:  ev.Country,
 		Severity: ev.Severity,
 		Read:     ev.Status == "seen" || ev.Status == "resolved",
 		Resolved: ev.Status == "resolved",
 		Title:    title,
 		Message:  ev.PlainExplanation,
 	}
+}
+
+// GET /api/servers/:id/alerts/timeline
+func (h *AlertsHandler) GetAlertsTimeline(c *gin.Context) {
+	serverID := c.Param("id")
+	timeline, err := h.Store.GetAlertsTimeline(c.Request.Context(), serverID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"timeline": timeline})
+}
+
+// GET /api/servers/:id/alerts/stats
+func (h *AlertsHandler) GetAlertsStats(c *gin.Context) {
+	serverID := c.Param("id")
+	stats, err := h.Store.GetAlertsStats(c.Request.Context(), serverID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
 }

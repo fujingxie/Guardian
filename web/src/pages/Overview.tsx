@@ -76,7 +76,14 @@ export default function OverviewPage() {
               value={summary.protected}
               hint={`占在线服务器 ${Math.round((summary.protected / Math.max(1, summary.online)) * 100)}%`}
               tone="teal"
-            />
+            >
+              <div className="mt-2">
+                <Meter
+                  value={(summary.protected / Math.max(1, summary.online)) * 100}
+                  showValue={false}
+                />
+              </div>
+            </SummaryCard>
             <SummaryCard
               label="待处理项"
               value={summary.pending}
@@ -172,11 +179,13 @@ function SummaryCard({
   value,
   hint,
   tone,
+  children,
 }: {
   label: string
   value: number
   hint: string
   tone?: 'teal' | 'warning' | 'primary'
+  children?: React.ReactNode
 }) {
   const dot =
     tone === 'teal'
@@ -208,6 +217,7 @@ function SummaryCard({
       >
         {value}
       </div>
+      {children}
       <div className="mt-2.5 text-[12px] text-[var(--color-text-muted)]">
         {hint}
       </div>
@@ -315,11 +325,18 @@ function ListRow({
           <Meter value={server.metrics.disk} className="max-w-[100px]" />
         </>
       )}
-      <div className="self-start">
+      <div className="flex flex-col items-start gap-1.5">
         <SecurityBadge
           state={server.security}
           pendingCount={server.pendingCount}
         />
+        {server.hardeningTotal !== undefined && server.hardeningTotal > 0 && (
+          <HardeningBar
+            applied={server.hardeningApplied ?? 0}
+            trial={server.hardeningTrial ?? 0}
+            total={server.hardeningTotal ?? 0}
+          />
+        )}
       </div>
       <span
         className={cn(
@@ -341,5 +358,53 @@ function ListRow({
 function Em() {
   return (
     <span className="text-[13px] text-[var(--color-text-faint)]">—</span>
+  )
+}
+
+function HardeningBar({
+  applied,
+  trial,
+  total,
+}: {
+  applied: number
+  trial: number
+  total: number
+}) {
+  if (total <= 0) return null
+
+  const appliedPct = (applied / total) * 100
+  const trialPct = (trial / total) * 100
+  const idlePct = (Math.max(0, total - applied - trial) / total) * 100
+
+  return (
+    <div className="flex flex-col gap-1 w-full max-w-[120px]">
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-divider)]">
+        {appliedPct > 0 && (
+          <div
+            className="h-full bg-[var(--color-success)] transition-all duration-300"
+            style={{ width: `${appliedPct}%` }}
+            title={`已加固: ${applied}/${total}`}
+          />
+        )}
+        {trialPct > 0 && (
+          <div
+            className="h-full bg-[var(--color-warning)] transition-all duration-300"
+            style={{ width: `${trialPct}%` }}
+            title={`试运行: ${trial}/${total}`}
+          />
+        )}
+        {idlePct > 0 && (
+          <div
+            className="h-full bg-[#E4E7EC] dark:bg-gray-700 transition-all duration-300"
+            style={{ width: `${idlePct}%` }}
+            title={`待加固: ${total - applied - trial}/${total}`}
+          />
+        )}
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-[var(--color-text-muted)] w-full">
+        <span>已加固 {applied}/{total}</span>
+        {trial > 0 && <span className="text-[var(--color-warning-deep)]">试运行 {trial}</span>}
+      </div>
+    </div>
   )
 }

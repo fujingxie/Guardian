@@ -47,6 +47,7 @@ func main() {
 	metrics := store.NewMetrics(pool)
 	hardening := store.NewHardening(pool)
 	alerts := store.NewAlerts(pool)
+	inventory := store.NewInventoryStore(pool)
 
 	explainService := explain.New(rds, cfg.ClaudeAPIKey, cfg.DeepSeekAPIKey)
 	notifyService := notify.New(alerts, notify.SMTPConfig{
@@ -72,6 +73,8 @@ func main() {
 		NotifyService:  notifyService,
 		ConsoleBaseURL: cfg.ConsoleBaseURL,
 		Hub:            hub,
+		InventoryStore: inventory,
+		Redis:          rds,
 	})
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

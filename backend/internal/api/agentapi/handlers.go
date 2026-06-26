@@ -19,16 +19,21 @@ import (
 	"github.com/guardian/backend/internal/explain"
 	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
+	"github.com/guardian/backend/internal/threshold"
+	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
-	Servers   *store.Servers
-	Metrics   *store.Metrics
-	Hardening *store.Hardening
-	Hub       *agenthub.Hub
-	Alerts    *store.Alerts
-	Explain   *explain.Service
-	Notify    *notify.Service
+	Servers          *store.Servers
+	Metrics          *store.Metrics
+	Hardening        *store.Hardening
+	Hub              *agenthub.Hub
+	Alerts           *store.Alerts
+	Explain          *explain.Service
+	Notify           *notify.Service
+	Inventory        *store.InventoryStore
+	Redis            *redis.Client
+	ThresholdChecker *threshold.Checker
 }
 
 type metricsPayload struct {
@@ -165,6 +170,8 @@ func (h *Handler) WebSocket(c *gin.Context) {
 			h.handleEvent(ctx, sv.ID, env.Payload)
 		case "job_result":
 			h.handleJobResult(ctx, sv.ID, env.Payload)
+		case "inventory":
+			h.handleInventory(ctx, sv.ID, env.Payload)
 		default:
 			log.Printf("[agentapi] %s recv %s (ignored)", sv.ID, env.Type)
 		}
@@ -214,6 +221,14 @@ func (h *Handler) handleMetrics(ctx context.Context, serverID string, raw json.R
 		if err := h.Servers.UpdateDistro(ctx, serverID, p.Distro); err != nil {
 			log.Printf("[agentapi] %s update distro error: %v", serverID, err)
 		}
+	}
+
+	if h.ThresholdChecker != nil {
+		serverName := serverID
+		if h.Hub != nil {
+			serverName = h.Hub.GetServerName(ctx, serverID)
+		}
+		h.ThresholdChecker.Check(ctx, serverID, serverName, point)
 	}
 }
 
@@ -324,6 +339,14 @@ func (h *Handler) handleEvent(ctx context.Context, serverID string, raw json.Raw
 		plainMsg = fmt.Sprintf("系统检测到安全事件（类型：%s），来源：%s。", p.EventType, p.SourceIP)
 	}
 
+	country := ""
+	if p.SourceIP != "" && h.Explain != nil {
+		c, _, _ := h.Explain.LookupIPDetail(ctx, p.SourceIP)
+		if c != "" && c != "未知" {
+			country = c
+		}
+	}
+
 	// 严重程度 severity (根据 eventType，通常封禁可以是 medium，其它 info)
 	severity := "info"
 	if p.EventType == "bruteforce_blocked" {
@@ -335,7 +358,7 @@ func (h *Handler) handleEvent(ctx context.Context, serverID string, raw json.Raw
 	}
 
 	// 2. 落库 security_events
-	ev, err := h.Alerts.CreateAlert(ctx, serverID, p.EventType, p.SourceIP, p.Detail, plainMsg, severity)
+	ev, err := h.Alerts.CreateAlert(ctx, serverID, p.EventType, p.SourceIP, country, p.Detail, plainMsg, severity)
 	if err != nil {
 		log.Printf("[agentapi] %s save security event to db error: %v", serverID, err)
 		return
@@ -346,8 +369,8 @@ func (h *Handler) handleEvent(ctx context.Context, serverID string, raw json.Raw
 	// 3. 多通道通知推送
 	if h.Notify != nil {
 		serverName := serverID
-		if sv, err := h.Servers.Get(ctx, serverID); err == nil && sv != nil {
-			serverName = sv.Name
+		if h.Hub != nil {
+			serverName = h.Hub.GetServerName(ctx, serverID)
 		}
 		title := fmt.Sprintf("[%s] 安全告警: %s", serverName, formatEventTitle(p.EventType))
 		h.Notify.Send(ctx, title, plainMsg)
@@ -364,5 +387,30 @@ func formatEventTitle(evt string) string {
 		return "拦截端口扫描"
 	default:
 		return "安全警告"
+	}
+}
+
+type inventoryPayload struct {
+	TS       time.Time `json:"ts"`
+	Ports    any       `json:"ports"`
+	Services any       `json:"services"`
+	Packages any       `json:"packages"`
+}
+
+func (h *Handler) handleInventory(ctx context.Context, serverID string, raw json.RawMessage) {
+	if h.Inventory == nil {
+		return
+	}
+	var p inventoryPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		log.Printf("[agentapi] %s bad inventory payload: %v", serverID, err)
+		return
+	}
+	if p.TS.IsZero() {
+		p.TS = time.Now().UTC()
+	}
+
+	if err := h.Inventory.Upsert(ctx, serverID, p.TS, p.Ports, p.Services, p.Packages); err != nil {
+		log.Printf("[agentapi] %s upsert inventory: %v", serverID, err)
 	}
 }

@@ -302,6 +302,96 @@ func (s *Service) storeToMemoryCache(ip, loc string) {
 	}
 }
 
+// LookupIP 导出的 IP 地理位置查询
+func (s *Service) LookupIP(ctx context.Context, ipStr string) string {
+	return s.lookupIP(ctx, ipStr)
+}
+
+// LookupIPDetail 详细的 IP 地理位置查询，返回国家、地区、城市
+func (s *Service) LookupIPDetail(ctx context.Context, ipStr string) (string, string, string) {
+	ipStr = strings.TrimSpace(ipStr)
+	if ipStr == "" || ipStr == "localhost" {
+		return "", "", ""
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return "", "", ""
+	}
+
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return "", "", ""
+	}
+
+	// 1. 内存缓存读取
+	cacheKeyMem := "ip_detail:" + ipStr
+	if val, ok := ipCache.Load(cacheKeyMem); ok {
+		if parts, ok := val.([]string); ok && len(parts) == 3 {
+			return parts[0], parts[1], parts[2]
+		}
+	}
+
+	// 2. Redis 缓存读取
+	cacheKeyRedis := "ip:location_detail:" + ipStr
+	if s.rds != nil {
+		if val, err := s.rds.Get(ctx, cacheKeyRedis).Result(); err == nil && val != "" {
+			parts := strings.Split(val, "|")
+			if len(parts) == 3 {
+				s.storeDetailToMemoryCache(ipStr, parts[0], parts[1], parts[2])
+				return parts[0], parts[1], parts[2]
+			}
+		}
+	}
+
+	// 3. 在线 API 查询
+	country, region, city := "未知", "", ""
+	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", url.PathEscape(ipStr))
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err == nil {
+		resp, err := s.httpClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var res struct {
+					Status     string `json:"status"`
+					Country    string `json:"country"`
+					RegionName string `json:"regionName"`
+					City       string `json:"city"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&res) == nil && res.Status == "success" {
+					if res.Country != "" {
+						country = res.Country
+					}
+					region = res.RegionName
+					city = res.City
+				}
+			}
+		}
+	}
+
+	// 4. 保存缓存
+	s.storeDetailToMemoryCache(ipStr, country, region, city)
+	if s.rds != nil {
+		val := fmt.Sprintf("%s|%s|%s", country, region, city)
+		_ = s.rds.Set(ctx, cacheKeyRedis, val, 30*24*time.Hour).Err()
+	}
+
+	return country, region, city
+}
+
+func (s *Service) storeDetailToMemoryCache(ip string, country, region, city string) {
+	if atomic.LoadInt64(&ipCacheCount) >= 10000 {
+		ipCache = sync.Map{}
+		atomic.StoreInt64(&ipCacheCount, 0)
+	}
+	val := []string{country, region, city}
+	cacheKeyMem := "ip_detail:" + ip
+	_, loaded := ipCache.LoadOrStore(cacheKeyMem, val)
+	if !loaded {
+		atomic.AddInt64(&ipCacheCount, 1)
+	}
+}
+
 // lookupIP 通过 ip-api.com 查询 IP 地理位置并进行二级缓存（Redis 30天 + 本地内存）。
 func (s *Service) lookupIP(ctx context.Context, ipStr string) string {
 	ipStr = strings.TrimSpace(ipStr)

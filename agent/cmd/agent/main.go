@@ -161,6 +161,44 @@ func onConnect(st *state.State, col *collector.Collector, dm *deadman.Deadman) f
 			}
 		}()
 
+		// 系统画像采集 (需求 2)
+		go func() {
+			ic := collector.NewInventoryCollector()
+			
+			doCollect := func() {
+				inv, err := ic.Collect(ctx)
+				if err != nil {
+					log.Printf("[agent] collect inventory failed: %v", err)
+					return
+				}
+				if inv == nil {
+					return
+				}
+				payload, err := json.Marshal(inv)
+				if err != nil {
+					log.Printf("[agent] marshal inventory payload failed: %v", err)
+					return
+				}
+				if safeSend(send, conn.Envelope{Type: "inventory", Payload: payload}) {
+					log.Printf("[agent] successfully reported inventory (ports=%d, services=%d, packages=%d)", 
+						len(inv.Ports), len(inv.Services), len(inv.Packages))
+				}
+			}
+
+			doCollect()
+
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					doCollect()
+				}
+			}
+		}()
+
 		// Fail2ban 日志监听
 		go collector.StartFail2banWatcher(ctx, send)
 	}

@@ -38,6 +38,7 @@ type Conn interface {
 type entry struct {
 	conn Conn
 	id   string
+	name string
 }
 
 type Hub struct {
@@ -65,11 +66,18 @@ func New(rds *redis.Client, servers *store.Servers, alerts *store.Alerts, exp *e
 // Register 当 agent 建立 WSS 连接时调用：登记 conn、置 online。
 // 如果同一台服务器已有旧连接，旧连接会被关闭（避免假在线）。
 func (h *Hub) Register(ctx context.Context, serverID string, c Conn) (*entry, error) {
+	name := serverID
+	if h.servers != nil {
+		if sv, err := h.servers.Get(ctx, serverID); err == nil && sv != nil {
+			name = sv.Name
+		}
+	}
+
 	h.mu.Lock()
 	if old, ok := h.conns[serverID]; ok {
 		_ = old.conn.Close()
 	}
-	e := &entry{conn: c, id: serverID}
+	e := &entry{conn: c, id: serverID, name: name}
 	h.conns[serverID] = e
 	h.mu.Unlock()
 
@@ -223,7 +231,7 @@ func (h *Hub) triggerOfflineAlert(ctx context.Context, serverID string) {
 		plainMsg = fmt.Sprintf("服务器离线！Guardian 失去与服务器 %s 的长连接心跳，请检查服务器网络或 Agent 状态。", serverName)
 	}
 
-	ev, err := h.alerts.CreateAlert(ctx, serverID, "offline", "", nil, plainMsg, "high")
+	ev, err := h.alerts.CreateAlert(ctx, serverID, "offline", "", "", nil, plainMsg, "high")
 	if err != nil {
 		log.Printf("[hub] save offline alert error: %v", err)
 		return
@@ -234,4 +242,29 @@ func (h *Hub) triggerOfflineAlert(ctx context.Context, serverID string) {
 		title := fmt.Sprintf("[%s] 紧急告警: 服务器离线", serverName)
 		h.notify.Send(ctx, title, plainMsg)
 	}
+}
+
+// GetServerName returns the cached server name for an active connection, 
+// or falls back to DB query, or serverID as a last resort.
+func (h *Hub) GetServerName(ctx context.Context, serverID string) string {
+	h.mu.RLock()
+	e, ok := h.conns[serverID]
+	if ok && e.name != "" {
+		name := e.name
+		h.mu.RUnlock()
+		return name
+	}
+	h.mu.RUnlock()
+
+	if h.servers != nil {
+		if sv, err := h.servers.Get(ctx, serverID); err == nil && sv != nil {
+			h.mu.Lock()
+			if e, ok := h.conns[serverID]; ok {
+				e.name = sv.Name
+			}
+			h.mu.Unlock()
+			return sv.Name
+		}
+	}
+	return serverID
 }

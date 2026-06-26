@@ -9,8 +9,9 @@ import type { Server } from '@/api/types'
 import { OverviewTab } from './server-tabs/OverviewTab'
 import { HardeningTab } from './server-tabs/HardeningTab'
 import { AlertsTab } from './server-tabs/AlertsTab'
+import { InventoryTab } from './server-tabs/InventoryTab'
 
-type TabKey = 'overview' | 'hardening' | 'alerts'
+type TabKey = 'overview' | 'hardening' | 'alerts' | 'inventory'
 
 export default function ServerDetailPage() {
   const { id = '' } = useParams<{ id: string }>()
@@ -130,6 +131,7 @@ export default function ServerDetailPage() {
                   label: '告警',
                   badge: alertCount ?? undefined,
                 },
+                { key: 'inventory', label: '系统画像' },
               ]}
               active={tab}
               onChange={(k) => setTab(k as TabKey)}
@@ -143,6 +145,7 @@ export default function ServerDetailPage() {
             {tab === 'alerts' && (
               <AlertsTab serverId={server.id} onCount={setAlertCount} />
             )}
+            {tab === 'inventory' && <InventoryTab server={server} />}
           </>
         )}
       </div>

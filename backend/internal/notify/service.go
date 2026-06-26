@@ -63,27 +63,35 @@ func (s *Service) InvalidateCache() {
 	s.cacheMu.Unlock()
 }
 
-// Send 核心推送逻辑。读取当前配置，向所有启用的通道发送通知。
-func (s *Service) Send(ctx context.Context, title, message string) {
-	var ns *store.NotifySettings
-	var err error
-
+// GetSettings 获取通知配置（包含 1 分钟缓存逻辑）
+func (s *Service) GetSettings(ctx context.Context) (*store.NotifySettings, error) {
 	s.cacheMu.RLock()
 	if s.cachedNS != nil && time.Since(s.cacheTime) < time.Minute {
-		ns = s.cachedNS
+		ns := s.cachedNS
+		s.cacheMu.RUnlock()
+		return ns, nil
 	}
 	s.cacheMu.RUnlock()
 
-	if ns == nil {
-		ns, err = s.alertsStore.GetNotifySettings(ctx)
-		if err != nil {
-			log.Printf("[notify] failed to get notify settings: %v", err)
-			return
-		}
-		s.cacheMu.Lock()
-		s.cachedNS = ns
-		s.cacheTime = time.Now()
-		s.cacheMu.Unlock()
+	ns, err := s.alertsStore.GetNotifySettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.cacheMu.Lock()
+	s.cachedNS = ns
+	s.cacheTime = time.Now()
+	s.cacheMu.Unlock()
+
+	return ns, nil
+}
+
+// Send 核心推送逻辑。读取当前配置，向所有启用的通道发送通知。
+func (s *Service) Send(ctx context.Context, title, message string) {
+	ns, err := s.GetSettings(ctx)
+	if err != nil {
+		log.Printf("[notify] failed to get notify settings: %v", err)
+		return
 	}
 
 	if !ns.Enabled {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Area,
   AreaChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,7 +18,7 @@ import {
   NetworkIcon,
 } from '@/components/icons'
 import { api } from '@/api/client'
-import type { MetricPoint, Server } from '@/api/types'
+import type { MetricPoint, Server, Settings } from '@/api/types'
 import { cn } from '@/lib/cn'
 
 interface Props {
@@ -26,11 +27,17 @@ interface Props {
 
 export function OverviewTab({ server }: Props) {
   const [points, setPoints] = useState<MetricPoint[] | null>(null)
+  const [settings, setSettings] = useState<Settings | null>(null)
   useEffect(() => {
     api.getMetrics(server.id).then((d) => setPoints(d.points))
+    api.getSettings().then(setSettings)
   }, [server.id])
 
   const offline = server.status === 'offline'
+
+  const cpuThreshold = settings?.notify?.cpuPctThreshold ?? 85
+  const memThreshold = settings?.notify?.memPctThreshold ?? 95
+  const diskThreshold = settings?.notify?.diskPctThreshold ?? 95
 
   return (
     <div className={cn('flex flex-col gap-6', offline && 'opacity-70')}>
@@ -40,18 +47,21 @@ export function OverviewTab({ server }: Props) {
           label="CPU"
           value={server.metrics.cpu}
           unit="%"
+          threshold={cpuThreshold}
         />
         <MetricCard
           icon={<MemoryIcon className="h-4 w-4" />}
           label="内存"
           value={server.metrics.mem}
           unit="%"
+          threshold={memThreshold}
         />
         <MetricCard
           icon={<HardDriveIcon className="h-4 w-4" />}
           label="磁盘"
           value={server.metrics.disk}
           unit="%"
+          threshold={diskThreshold}
         />
         <NetCard
           netUp={server.metrics.netUp}
@@ -77,6 +87,7 @@ export function OverviewTab({ server }: Props) {
           dataKey="cpu"
           stroke="var(--color-primary)"
           fill="rgba(47,111,237,0.18)"
+          threshold={cpuThreshold}
         />
         <TrendCard
           title="内存使用率 · 24 小时"
@@ -84,6 +95,17 @@ export function OverviewTab({ server }: Props) {
           dataKey="mem"
           stroke="var(--color-teal-deep)"
           fill="rgba(20,184,166,0.18)"
+          threshold={memThreshold}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <TrendCard
+          title="磁盘使用率 · 24 小时"
+          points={points}
+          dataKey="disk"
+          stroke="#F59E0B"
+          fill="rgba(245,158,11,0.18)"
+          threshold={diskThreshold}
         />
       </div>
     </div>
@@ -95,13 +117,15 @@ function MetricCard({
   label,
   value,
   unit,
+  threshold,
 }: {
   icon: React.ReactNode
   label: string
   value: number
   unit: string
+  threshold?: number
 }) {
-  const high = value >= 80
+  const high = threshold ? value >= threshold : value >= 80
   return (
     <Card padded={false} className="p-5">
       <div className="mb-3 flex items-center justify-between text-[13px] text-[var(--color-text-2)]">
@@ -180,12 +204,14 @@ function TrendCard({
   dataKey,
   stroke,
   fill,
+  threshold,
 }: {
   title: string
   points: MetricPoint[] | null
-  dataKey: 'cpu' | 'mem'
+  dataKey: 'cpu' | 'mem' | 'disk'
   stroke: string
   fill: string
+  threshold?: number
 }) {
   const peak =
     points && points.length
@@ -230,6 +256,21 @@ function TrendCard({
                 tickLine={false}
                 tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }}
               />
+              {threshold != null && (
+                <ReferenceLine
+                  y={threshold}
+                  stroke="#EF4444"
+                  strokeDasharray="6 3"
+                  strokeWidth={1.5}
+                  label={{
+                    value: `${threshold}%`,
+                    position: 'right',
+                    fill: '#EF4444',
+                    fontSize: 10,
+                    fontWeight: 600,
+                  }}
+                />
+              )}
               <Tooltip
                 cursor={{
                   stroke: 'var(--color-border)',
