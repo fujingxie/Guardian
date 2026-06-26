@@ -62,6 +62,10 @@ func NewRouter(deps Deps) *gin.Engine {
 		protected.GET("/servers/:id", sh.Get)
 		protected.PUT("/servers/:id", sh.Update)
 		protected.DELETE("/servers/:id", sh.Delete)
+
+		// 公开的下载服务（不需要鉴权）
+		r.GET("/install.sh", sh.DownloadInstallScript)
+		apiGroup.GET("/agent/download", sh.DownloadAgent)
 	}
 	if deps.MetricsStore != nil {
 		mh := &handlers.MetricsHandler{Store: deps.MetricsStore}

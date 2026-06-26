@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -271,4 +272,45 @@ func (h *ServersHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GET /install.sh
+func (h *ServersHandler) DownloadInstallScript(c *gin.Context) {
+	filePath := "/app/install.sh"
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		filePath = "../install.sh"
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "install script not found"})
+			return
+		}
+	}
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.File(filePath)
+}
+
+// GET /api/agent/download?arch=amd64
+func (h *ServersHandler) DownloadAgent(c *gin.Context) {
+	arch := c.Query("arch")
+	if arch != "amd64" && arch != "arm64" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request", "message": "unsupported architecture"})
+		return
+	}
+
+	filePath := fmt.Sprintf("/app/agents/agent-linux-%s", arch)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		filePath = fmt.Sprintf("../agent/agent-linux-%s", arch)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			filePath = "../agent/agent_bin"
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "agent binary not found"})
+				return
+			}
+		}
+	}
+
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=guardian-agent-%s", arch))
+	c.Header("Content-Type", "application/octet-stream")
+	c.File(filePath)
 }

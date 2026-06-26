@@ -13,6 +13,11 @@ http://{$GUARDIAN_DOMAIN} {
         reverse_proxy backend:8080
     }
 
+    # install.sh 脚本反代到 backend
+    handle /install.sh {
+        reverse_proxy backend:8080
+    }
+
     # 其他请求服务前端静态资源
     handle {
         reverse_proxy web:80
