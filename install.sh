@@ -47,6 +47,34 @@ fi
 echo "[guardian] 正在从控制台下载 Agent 二进制文件..."
 mkdir -p /usr/local/bin
 curl $CURL_OPTS -o /usr/local/bin/guardian-agent "$DOWNLOAD_URL"
+
+# 二进制完整性与防篡改 SHA256 校验
+EXPECTED_SHA256=""
+if [ "$AGENT_ARCH" = "amd64" ]; then
+    EXPECTED_SHA256="{{AMD64_SHA256}}"
+else
+    EXPECTED_SHA256="{{ARM64_SHA256}}"
+fi
+
+# 如果占位符未被替换（例如开发测试期间直接跑脚本，或者通过本地执行），则尝试 fallback 调接口获取
+if [[ "$EXPECTED_SHA256" == "{{"* || -z "$EXPECTED_SHA256" ]]; then
+    echo "[guardian] 检测到占位符未被嵌入，尝试从控制台获取二进制校验和..."
+    SHA256_URL="${CONSOLE}/api/agent/download/sha256?arch=${AGENT_ARCH}"
+    EXPECTED_SHA256=$(curl $CURL_OPTS "$SHA256_URL" | tr -d '[:space:]')
+fi
+
+echo "[guardian] 正在校验二进制完整性..."
+ACTUAL_SHA256=$(sha256sum /usr/local/bin/guardian-agent | awk '{print $1}' | tr -d '[:space:]')
+
+if [ "$EXPECTED_SHA256" != "$ACTUAL_SHA256" ]; then
+    echo "[guardian] ❌ 错误：Agent 二进制文件校验失败，可能是下载文件损坏或遭到拦截修改！" >&2
+    echo "预期：$EXPECTED_SHA256" >&2
+    echo "实际：$ACTUAL_SHA256" >&2
+    rm -f /usr/local/bin/guardian-agent
+    exit 1
+fi
+echo "[guardian] ✅ 校验成功！"
+
 chmod +x /usr/local/bin/guardian-agent
 
 # 3. 创建 Systemd 单元文件

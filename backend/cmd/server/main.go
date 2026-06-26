@@ -123,6 +123,14 @@ func runMetricsCleanup(ctx context.Context, m *store.Metrics) {
 // runDeadmanSwitchSweeper 每 5 秒扫描一次超时 trial 的加固任务并自动下发回滚命令。
 func runDeadmanSwitchSweeper(ctx context.Context, s *store.Hardening, hub *agenthub.Hub) {
 	sweep := func() {
+		// 1. 定期清理已经超时 (超过5分钟) 仍为 pending 的任务状态，防止前端 spinner 永远加载
+		if n, err := s.CleanTimeoutPendingJobs(ctx); err == nil && n > 0 {
+			log.Printf("[deadman] cleaned up %d timeout pending hardening jobs", n)
+		} else if err != nil {
+			log.Printf("[deadman] CleanTimeoutPendingJobs error: %v", err)
+		}
+
+		// 2. 扫描处理超时的 trial 任务并触发自主回滚
 		jobs, err := s.GetTimeoutTrialJobs(ctx)
 		if err != nil {
 			log.Printf("[deadman] scan timeout: %v", err)
@@ -132,7 +140,9 @@ func runDeadmanSwitchSweeper(ctx context.Context, s *store.Hardening, hub *agent
 			log.Printf("[deadman] automatically rolling back job %s (server: %s, key: %s) due to confirm timeout", j.ID, j.ServerID, j.ItemKey)
 			
 			// 数据库置为 rolledback
-			_ = s.UpdateJobStatus(ctx, j.ID, "rolledback", nil)
+			if err := s.UpdateJobStatus(ctx, j.ID, "rolledback", nil); err != nil {
+				log.Printf("[deadman] UpdateJobStatus %s to rolledback error: %v", j.ID, err)
+			}
 
 			// 尝试下发 WSS 命令给 Agent
 			var files map[string]any
@@ -149,7 +159,9 @@ func runDeadmanSwitchSweeper(ctx context.Context, s *store.Hardening, hub *agent
 					"files": files,
 				},
 			}
-			_ = hub.CommandTo(j.ServerID, cmdMsg)
+			if err := hub.CommandTo(j.ServerID, cmdMsg); err != nil {
+				log.Printf("[deadman] automatically rollback CommandTo %s error: %v", j.ServerID, err)
+			}
 		}
 	}
 

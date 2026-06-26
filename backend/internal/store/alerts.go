@@ -58,13 +58,14 @@ func (a *Alerts) CreateAlert(ctx context.Context, serverID, eventType, sourceIP 
 	return &ev, nil
 }
 
-func (a *Alerts) ListAlerts(ctx context.Context, serverID string) ([]SecurityEvent, error) {
+func (a *Alerts) ListAlerts(ctx context.Context, serverID string, limit, offset int) ([]SecurityEvent, error) {
 	rows, err := a.pool.Query(ctx, `
 		SELECT id, server_id, type, source_ip, detail, plain_explanation, severity, status, created_at
 		FROM security_events
 		WHERE server_id = $1
 		ORDER BY created_at DESC
-	`, serverID)
+		LIMIT $2 OFFSET $3
+	`, serverID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

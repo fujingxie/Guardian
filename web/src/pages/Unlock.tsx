@@ -109,9 +109,11 @@ export default function UnlockPage() {
             <StatusDot tone="success" />
             自部署 · 单用户 · 无账号
           </div>
-          <div className="mt-3 text-[11px] text-[var(--color-text-faint)]">
-            演示口令：<span className="font-mono">guardian-demo-2026</span>
-          </div>
+          {import.meta.env.DEV && (
+            <div className="mt-3 text-[11px] text-[var(--color-text-faint)]">
+              演示口令：<span className="font-mono">guardian-demo-2026</span>
+            </div>
+          )}
         </form>
       </div>
     </div>

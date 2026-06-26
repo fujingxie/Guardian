@@ -67,6 +67,24 @@ func (h *Hardening) ListItems(ctx context.Context) ([]HardeningItem, error) {
 	return list, rows.Err()
 }
 
+// GetItem 获取单个加固项的定义
+func (h *Hardening) GetItem(ctx context.Context, key string) (*HardeningItem, error) {
+	row := h.pool.QueryRow(ctx, `
+		SELECT key, category, title, plain_explanation, risk_level, default_enabled
+		FROM hardening_items
+		WHERE key = $1
+	`, key)
+	var item HardeningItem
+	err := row.Scan(
+		&item.Key, &item.Category, &item.Title, &item.PlainExplanation,
+		&item.RiskLevel, &item.DefaultEnabled,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &item, err
+}
+
 // GetLatestJobs 获取某台服务器上每个加固项最新的一条任务记录
 func (h *Hardening) GetLatestJobs(ctx context.Context, serverID string) (map[string]*HardeningJob, error) {
 	rows, err := h.pool.Query(ctx, `
@@ -223,4 +241,17 @@ func (h *Hardening) GetTimeoutTrialJobs(ctx context.Context) ([]*HardeningJob, e
 		list = append(list, &j)
 	}
 	return list, rows.Err()
+}
+
+// CleanTimeoutPendingJobs 自动把超过 5 分钟仍为 pending 状态的任务置为 failed 并标注 timeout。
+func (h *Hardening) CleanTimeoutPendingJobs(ctx context.Context) (int64, error) {
+	tag, err := h.pool.Exec(ctx, `
+		UPDATE hardening_jobs
+		SET status = 'failed', error = 'timeout'
+		WHERE status = 'pending' AND created_at < NOW() - INTERVAL '5 minutes'
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

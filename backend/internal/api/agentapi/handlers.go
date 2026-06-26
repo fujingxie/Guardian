@@ -129,7 +129,8 @@ func (h *Handler) WebSocket(c *gin.Context) {
 	wsConn := &wsConnAdapter{Conn: conn}
 
 	ctx := context.Background()
-	if err := h.Hub.Register(ctx, sv.ID, wsConn); err != nil {
+	e, err := h.Hub.Register(ctx, sv.ID, wsConn)
+	if err != nil {
 		log.Printf("[agentapi] hub register %s: %v", sv.ID, err)
 		_ = conn.Close()
 		return
@@ -137,7 +138,7 @@ func (h *Handler) WebSocket(c *gin.Context) {
 	log.Printf("[agentapi] %s connected", sv.ID)
 
 	defer func() {
-		h.Hub.Unregister(ctx, sv.ID)
+		h.Hub.Unregister(ctx, sv.ID, e)
 		_ = conn.Close()
 		log.Printf("[agentapi] %s disconnected", sv.ID)
 	}()
@@ -210,7 +211,9 @@ func (h *Handler) handleMetrics(ctx context.Context, serverID string, raw json.R
 		log.Printf("[agentapi] %s insert metrics: %v", serverID, err)
 	}
 	if p.Distro != "" {
-		_ = h.Servers.UpdateDistro(ctx, serverID, p.Distro)
+		if err := h.Servers.UpdateDistro(ctx, serverID, p.Distro); err != nil {
+			log.Printf("[agentapi] %s update distro error: %v", serverID, err)
+		}
 	}
 }
 
@@ -240,13 +243,26 @@ func (h *Handler) handleJobResult(ctx context.Context, serverID string, raw json
 
 	if p.Status == "failed" {
 		log.Printf("[agentapi] %s job %s failed: %s", serverID, p.JobID, p.Error)
-		_ = h.Hardening.UpdateJobStatus(ctx, p.JobID, "failed", &p.Error)
+		if err := h.Hardening.UpdateJobStatus(ctx, p.JobID, "failed", &p.Error); err != nil {
+			log.Printf("[agentapi] %s UpdateJobStatus failed error: %v", serverID, err)
+		}
+		return
+	}
+
+	if p.Status == "rolledback" {
+		log.Printf("[agentapi] %s job %s reported rolledback: %s", serverID, p.JobID, p.Error)
+		if err := h.Hardening.UpdateJobStatus(ctx, p.JobID, "rolledback", &p.Error); err != nil {
+			log.Printf("[agentapi] %s UpdateJobStatus rolledback error: %v", serverID, err)
+		}
 		return
 	}
 
 	// 成功逻辑
-	// 判定是否是高风险项目：ssh_no_password, ssh_port, ssh_no_root
-	isHighRisk := p.Key == "ssh_no_password" || p.Key == "ssh_port" || p.Key == "ssh_no_root"
+	// 动态从数据库中单点读取判定风险等级
+	isHighRisk := false
+	if item, err := h.Hardening.GetItem(ctx, p.Key); err == nil && item != nil {
+		isHighRisk = item.RiskLevel == "high"
+	}
 
 	if !isHighRisk {
 		// 普通加固项直接 applied

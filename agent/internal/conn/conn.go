@@ -31,7 +31,7 @@ type Loop struct {
 	AgentToken string
 	Insecure   bool
 
-	OnConnect func(send chan<- Envelope) // 每次连上后调用一次
+	OnConnect func(ctx context.Context, send chan<- Envelope) // 每次连上后调用一次，传入连接级的 context
 	OnMessage func(env Envelope, send chan<- Envelope)
 }
 
@@ -41,25 +41,31 @@ func (l *Loop) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := l.runOnce(ctx); err != nil {
+		connected, err := l.runOnce(ctx)
+		if err != nil {
 			log.Printf("[agent] ws disconnected: %v (retry in %s)", err, backoff)
+		}
+		if connected {
+			backoff = time.Second // 只要曾经成功连上，断开后重新从 1s 指数退避
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
 		}
-		backoff *= 2
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
+		if !connected {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 }
 
-func (l *Loop) runOnce(ctx context.Context) error {
+func (l *Loop) runOnce(ctx context.Context) (bool, error) {
 	u, err := url.Parse(strings.TrimRight(l.ConsoleURL, "/"))
 	if err != nil {
-		return fmt.Errorf("parse console url: %w", err)
+		return false, fmt.Errorf("parse console url: %w", err)
 	}
 	switch u.Scheme {
 	case "http":
@@ -78,14 +84,17 @@ func (l *Loop) runOnce(ctx context.Context) error {
 
 	ws, _, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer ws.Close()
 	log.Printf("[agent] ws connected to %s", u.String())
 
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // 退出时自动取消当前长连接的所有相关协程
+
 	send := make(chan Envelope, 16)
 	if l.OnConnect != nil {
-		l.OnConnect(send)
+		l.OnConnect(connCtx, send)
 	}
 
 	// 写循环
@@ -94,7 +103,7 @@ func (l *Loop) runOnce(ctx context.Context) error {
 		defer close(writerErr)
 		for {
 			select {
-			case <-ctx.Done():
+			case <-connCtx.Done():
 				_ = ws.WriteControl(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "shutdown"),
 					time.Now().Add(time.Second))
@@ -119,11 +128,11 @@ func (l *Loop) runOnce(ctx context.Context) error {
 			select {
 			case e := <-writerErr:
 				if e != nil {
-					return fmt.Errorf("write: %w", e)
+					return true, fmt.Errorf("write: %w", e)
 				}
 			default:
 			}
-			return fmt.Errorf("read: %w", err)
+			return true, fmt.Errorf("read: %w", err)
 		}
 		if l.OnMessage != nil {
 			l.OnMessage(env, send)

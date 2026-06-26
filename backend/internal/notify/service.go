@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/guardian/backend/internal/store"
@@ -39,6 +41,10 @@ type Service struct {
 	alertsStore *store.Alerts
 	smtpCfg     SMTPConfig
 	httpClient  *http.Client
+
+	cacheMu   sync.RWMutex
+	cachedNS  *store.NotifySettings
+	cacheTime time.Time
 }
 
 func New(alertsStore *store.Alerts, smtpCfg SMTPConfig) *Service {
@@ -51,16 +57,36 @@ func New(alertsStore *store.Alerts, smtpCfg SMTPConfig) *Service {
 	}
 }
 
+func (s *Service) InvalidateCache() {
+	s.cacheMu.Lock()
+	s.cachedNS = nil
+	s.cacheMu.Unlock()
+}
+
 // Send 核心推送逻辑。读取当前配置，向所有启用的通道发送通知。
 func (s *Service) Send(ctx context.Context, title, message string) {
-	ns, err := s.alertsStore.GetNotifySettings(ctx)
-	if err != nil {
-		log.Printf("[notify] failed to get notify settings: %v", err)
-		return
+	var ns *store.NotifySettings
+	var err error
+
+	s.cacheMu.RLock()
+	if s.cachedNS != nil && time.Since(s.cacheTime) < time.Minute {
+		ns = s.cachedNS
+	}
+	s.cacheMu.RUnlock()
+
+	if ns == nil {
+		ns, err = s.alertsStore.GetNotifySettings(ctx)
+		if err != nil {
+			log.Printf("[notify] failed to get notify settings: %v", err)
+			return
+		}
+		s.cacheMu.Lock()
+		s.cachedNS = ns
+		s.cacheTime = time.Now()
+		s.cacheMu.Unlock()
 	}
 
 	if !ns.Enabled {
-		log.Printf("[notify] global notification is disabled")
 		return
 	}
 
@@ -152,12 +178,14 @@ func (s *Service) sendEmail(to, subject, body string) error {
 		return errors.New("SMTP 服务器未配置（环境变量 SMTP_HOST 为空）")
 	}
 
-	auth := smtp.PlainAuth("", s.smtpCfg.User, s.smtpCfg.Pass, s.smtpCfg.Host)
-	
-	// 组装标准的 MIME 邮件，并指定 Content-Type 保证中文不乱码
+	// 过滤换行以防止邮件头注入
+	replacer := strings.NewReplacer("\r", "", "\n", "")
+	to = replacer.Replace(to)
+	subject = replacer.Replace(subject)
+
 	fromName := "Guardian Admin"
 	if s.smtpCfg.From != "" {
-		fromName = s.smtpCfg.From
+		fromName = replacer.Replace(s.smtpCfg.From)
 	}
 
 	msg := fmt.Sprintf("From: %s <%s>\r\n"+
@@ -168,7 +196,80 @@ func (s *Service) sendEmail(to, subject, body string) error {
 		"%s", fromName, s.smtpCfg.User, to, subject, body)
 
 	addr := fmt.Sprintf("%s:%s", s.smtpCfg.Host, s.smtpCfg.Port)
-	return smtp.SendMail(addr, auth, s.smtpCfg.User, []string{to}, []byte(msg))
+	auth := smtp.PlainAuth("", s.smtpCfg.User, s.smtpCfg.Pass, s.smtpCfg.Host)
+
+	// 1. 如果端口是 465，通常是 SSL/TLS (隐式 TLS)
+	if s.smtpCfg.Port == "465" {
+		tlsConfig := &tls.Config{
+			ServerName: s.smtpCfg.Host,
+		}
+		conn, err := tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("tls dial error: %w", err)
+		}
+		defer conn.Close()
+
+		c, err := smtp.NewClient(conn, s.smtpCfg.Host)
+		if err != nil {
+			return fmt.Errorf("smtp client error: %w", err)
+		}
+		defer c.Close()
+
+		if err = c.Auth(auth); err != nil {
+			return fmt.Errorf("smtp auth error: %w", err)
+		}
+
+		if err = c.Mail(s.smtpCfg.User); err != nil {
+			return err
+		}
+		if err = c.Rcpt(to); err != nil {
+			return err
+		}
+		w, err := c.Data()
+		if err != nil {
+			return err
+		}
+		_, err = w.Write([]byte(msg))
+		if err != nil {
+			return err
+		}
+		_ = w.Close()
+		return c.Quit()
+	}
+
+	// 2. 否则使用普通 TCP 拨号，并探测 STARTTLS
+	c, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial error: %w", err)
+	}
+	defer c.Close()
+
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		config := &tls.Config{ServerName: s.smtpCfg.Host}
+		if err = c.StartTLS(config); err != nil {
+			return fmt.Errorf("smtp starttls error: %w", err)
+		}
+	}
+
+	if err = c.Auth(auth); err != nil {
+		return fmt.Errorf("smtp auth error: %w", err)
+	}
+	if err = c.Mail(s.smtpCfg.User); err != nil {
+		return err
+	}
+	if err = c.Rcpt(to); err != nil {
+		return err
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte(msg))
+	if err != nil {
+		return err
+	}
+	_ = w.Close()
+	return c.Quit()
 }
 
 func (s *Service) sendTelegram(configStr, text string) error {

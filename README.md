@@ -55,6 +55,24 @@ docker compose up -d
 ```
 服务启动后，在浏览器中打开：`http://<您的IP>:18081`，输入您在 `.env` 中配的 `ACCESS_TOKEN` 解锁口令，即可进入控制台大盘！
 
+### 🔒 生产环境切换为 HTTPS 安全加密访问
+为了防止在公网上传输时泄露您的 `ACCESS_TOKEN` 以及 Agent 通信数据，强烈建议生产环境使用域名并通过 HTTPS 访问控制台：
+
+1. **域名解析**：将您的域名（如 `guardian.example.com`）解析到控制台服务器的公网 IP 上。
+2. **修改 .env 配置**：
+   - 将 `GUARDIAN_DOMAIN` 修改为您的解析域名（如 `GUARDIAN_DOMAIN=guardian.example.com`）。
+   - 将 `CONSOLE_BASE_URL` 的 `http://` 替换为 `https://`，并将端口修改为 443（如 `CONSOLE_BASE_URL=https://guardian.example.com`）。
+3. **调整端口映射 (重要)**：
+   - 默认 compose 中 Caddy 映射在 `18081:80` 上。要支持 HTTPS 自动申请证书，您需要将控制台服务器的 `80` 和 `443` 端口均指向 Caddy 容器。
+   - 修改 `deploy/docker-compose.yml` 中的 `caddy` 服务映射：
+     ```yaml
+     ports:
+       - "80:80"
+       - "443:443"
+     ```
+   - 修改 `deploy/Caddyfile` 文件，将第 8 行的 `http://` 移除，替换为您的域名（如 `https://{$GUARDIAN_DOMAIN}`），Caddy 会全自动申请并管理 Let's Encrypt 的免费 SSL/TLS 证书。
+4. **重新部署**：在 `deploy` 目录下运行 `docker compose down && docker compose up -d` 重新构建并拉起服务。
+
 ---
 
 ## 🖥️ 新服务器一键加机（Agent 部署）

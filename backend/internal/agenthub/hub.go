@@ -64,31 +64,60 @@ func New(rds *redis.Client, servers *store.Servers, alerts *store.Alerts, exp *e
 
 // Register 当 agent 建立 WSS 连接时调用：登记 conn、置 online。
 // 如果同一台服务器已有旧连接，旧连接会被关闭（避免假在线）。
-func (h *Hub) Register(ctx context.Context, serverID string, c Conn) error {
+func (h *Hub) Register(ctx context.Context, serverID string, c Conn) (*entry, error) {
 	h.mu.Lock()
 	if old, ok := h.conns[serverID]; ok {
 		_ = old.conn.Close()
 	}
-	h.conns[serverID] = &entry{conn: c, id: serverID}
+	e := &entry{conn: c, id: serverID}
+	h.conns[serverID] = e
 	h.mu.Unlock()
 
-	if err := h.rds.Set(ctx, onlineKey(serverID), "1", OnlineTTL).Err(); err != nil {
-		return err
+	if h.rds != nil {
+		if err := h.rds.Set(ctx, onlineKey(serverID), "1", OnlineTTL).Err(); err != nil {
+			h.mu.Lock()
+			if h.conns[serverID] == e {
+				delete(h.conns, serverID)
+			}
+			h.mu.Unlock()
+			return nil, err
+		}
 	}
-	return h.servers.SetStatus(ctx, serverID, "online", time.Now().UTC())
+	if h.servers != nil {
+		if err := h.servers.SetStatus(ctx, serverID, "online", time.Now().UTC()); err != nil {
+			h.mu.Lock()
+			if h.conns[serverID] == e {
+				delete(h.conns, serverID)
+			}
+			h.mu.Unlock()
+			return nil, err
+		}
+	}
+	return e, nil
 }
 
 // Unregister 当连接断开时调用：摘掉 conn、置 offline。
-func (h *Hub) Unregister(ctx context.Context, serverID string) {
+func (h *Hub) Unregister(ctx context.Context, serverID string, e *entry) {
 	h.mu.Lock()
-	_, exists := h.conns[serverID]
-	delete(h.conns, serverID)
-	h.mu.Unlock()
-	_ = h.rds.Del(ctx, onlineKey(serverID)).Err()
-	if err := h.servers.SetStatus(ctx, serverID, "offline", time.Now().UTC()); err != nil {
-		log.Printf("[hub] mark offline %s: %v", serverID, err)
+	curr, exists := h.conns[serverID]
+	if exists && curr == e {
+		delete(h.conns, serverID)
+	} else {
+		exists = false
 	}
+	h.mu.Unlock()
+
 	if exists {
+		if h.rds != nil {
+			if err := h.rds.Del(ctx, onlineKey(serverID)).Err(); err != nil {
+				log.Printf("[hub] delete online key from redis %s error: %v", serverID, err)
+			}
+		}
+		if h.servers != nil {
+			if err := h.servers.SetStatus(ctx, serverID, "offline", time.Now().UTC()); err != nil {
+				log.Printf("[hub] mark offline %s: %v", serverID, err)
+			}
+		}
 		go h.triggerOfflineAlert(context.Background(), serverID)
 	}
 }

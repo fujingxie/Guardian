@@ -79,14 +79,14 @@ func main() {
 		ConsoleURL: st.ConsoleURL,
 		AgentToken: st.AgentToken,
 		Insecure:   *insecure,
-		OnConnect:  onConnect(ctx, st, col),
+		OnConnect:  onConnect(st, col, dm),
 		OnMessage:  onMessage(ctx, dm, execObj),
 	}
 	loop.Run(ctx)
 }
 
-func onConnect(ctx context.Context, st *state.State, col *collector.Collector) func(send chan<- conn.Envelope) {
-	return func(send chan<- conn.Envelope) {
+func onConnect(st *state.State, col *collector.Collector, dm *deadman.Deadman) func(ctx context.Context, send chan<- conn.Envelope) {
+	return func(ctx context.Context, send chan<- conn.Envelope) {
 		hn, _ := os.Hostname()
 		hello, _ := json.Marshal(map[string]any{
 			"serverId":     st.ServerID,
@@ -96,6 +96,21 @@ func onConnect(ctx context.Context, st *state.State, col *collector.Collector) f
 			"agentVersion": agentVersion,
 		})
 		safeSend(send, conn.Envelope{Type: "hello", Payload: hello})
+
+		// 离线上报自主回滚状态给控制台
+		if job, err := dm.GetActive(); err == nil && job != nil && job.Status == "rolledback" {
+			reply, _ := json.Marshal(map[string]any{
+				"jobId":    job.JobID,
+				"key":      job.Key,
+				"status":   "rolledback",
+				"snapshot": job.Files,
+				"error":    "deadman switch triggered autonomous rollback",
+			})
+			if safeSend(send, conn.Envelope{Type: "job_result", Payload: reply}) {
+				log.Printf("[agent] reported autonomous rollback for job %s to console", job.JobID)
+				dm.Clear() // 只有在通过长连接成功发送给服务端后，本地才 Clear
+			}
+		}
 
 		// 心跳
 		go func() {
@@ -159,11 +174,12 @@ func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Exec
 		}
 
 		var cmd struct {
-			Cmd     string            `json:"cmd"`
-			JobID   string            `json:"jobId"`
-			Key     string            `json:"key"`
-			AdminIP string            `json:"adminIp"`
-			Files   map[string]string `json:"files"`
+			Cmd      string            `json:"cmd"`
+			JobID    string            `json:"jobId"`
+			Key      string            `json:"key"`
+			AdminIP  string            `json:"adminIp"`
+			Files    map[string]string `json:"files"`
+			HighRisk bool              `json:"highRisk"`
 		}
 
 		if err := json.Unmarshal(env.Payload, &cmd); err != nil {
@@ -188,7 +204,7 @@ func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Exec
 				}
 
 				// 高风险项，写入本地 trial 状态
-				isHighRisk := cmd.Key == "ssh_no_password" || cmd.Key == "ssh_port" || cmd.Key == "ssh_no_root"
+				isHighRisk := cmd.HighRisk
 				if isHighRisk {
 					// 试运行 5 分钟，自动计算回滚时间
 					rollbackAt := time.Now().Add(5 * time.Minute)

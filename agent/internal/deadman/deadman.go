@@ -18,6 +18,7 @@ type TrialJob struct {
 	Key        string            `json:"key"`
 	RollbackAt time.Time         `json:"rollbackAt"`
 	Files      map[string]string `json:"files"`
+	Status     string            `json:"status,omitempty"` // trial | rolledback
 }
 
 type Deadman struct {
@@ -74,22 +75,26 @@ func (d *Deadman) GetActive() (*TrialJob, error) {
 // StartMonitor 启动本地死人开关监控后台循环。
 // 在启动时，如果读取到本地有残留的 trial_job 且已超时，会立刻触发自主回滚。
 func (d *Deadman) StartMonitor(ctx context.Context, exec *hardening.Executor) {
-	// 启动自检
-	if job, err := d.GetActive(); err == nil && job != nil {
-		if time.Now().After(job.RollbackAt) {
-			log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:StaleTrialOnStartup] [Key:%s] [JobID:%s]", job.Key, job.JobID)
-			if err := exec.Rollback(ctx, job.Files); err == nil {
-				d.Clear()
-			} else {
-				log.Printf("[deadman] Autonomous rollback failed on startup: %v", err)
-			}
-		} else {
-			left := time.Until(job.RollbackAt)
-			log.Printf("[deadman] Resuming active trial job %s (key: %s) with %s left before auto-rollback", job.JobID, job.Key, left.Round(time.Second))
-		}
-	}
-
 	go func() {
+		// 1. 启动自检
+		if job, err := d.GetActive(); err == nil && job != nil {
+			if job.Status == "" || job.Status == "trial" {
+				if time.Now().After(job.RollbackAt) {
+					log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:StaleTrialOnStartup] [Key:%s] [JobID:%s]", job.Key, job.JobID)
+					if err := exec.Rollback(ctx, job.Files); err == nil {
+						job.Status = "rolledback"
+						_ = d.SetTrial(*job) // 保存为已回滚状态，重连后上报
+					} else {
+						log.Printf("[deadman] Autonomous rollback failed on startup: %v", err)
+					}
+				} else {
+					left := time.Until(job.RollbackAt)
+					log.Printf("[deadman] Resuming active trial job %s (key: %s) with %s left before auto-rollback", job.JobID, job.Key, left.Round(time.Second))
+				}
+			}
+		}
+
+		// 2. 定时监控
 		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
 		for {
@@ -101,13 +106,18 @@ func (d *Deadman) StartMonitor(ctx context.Context, exec *hardening.Executor) {
 				if err != nil || job == nil {
 					continue
 				}
-				if time.Now().After(job.RollbackAt) {
-					log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:TimeoutReached] [Key:%s] [JobID:%s]", job.Key, job.JobID)
-					if err := exec.Rollback(ctx, job.Files); err == nil {
-						log.Printf("[deadman] Autonomous rollback succeeded. Connection settings reverted.")
-						d.Clear()
-					} else {
-						log.Printf("[deadman] Autonomous rollback failed: %v", err)
+				if job.Status == "" || job.Status == "trial" {
+					if time.Now().After(job.RollbackAt) {
+						log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:TimeoutReached] [Key:%s] [JobID:%s]", job.Key, job.JobID)
+						if err := exec.Rollback(ctx, job.Files); err == nil {
+							log.Printf("[deadman] Autonomous rollback succeeded. Connection settings reverted.")
+							job.Status = "rolledback"
+							if err := d.SetTrial(*job); err != nil {
+								log.Printf("[deadman] failed to save rolledback state: %v", err)
+							}
+						} else {
+							log.Printf("[deadman] Autonomous rollback failed: %v", err)
+						}
 					}
 				}
 			}

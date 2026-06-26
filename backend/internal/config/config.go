@@ -47,8 +47,7 @@ func MustLoad() Config {
 	c.TrialDuration = d
 
 	if strings.TrimSpace(c.AccessToken) == "" {
-		// 不强行 panic：方便本地开发；启动日志会高亮警告。
-		c.AccessToken = "guardian-dev-token"
+		panic("FATAL: ACCESS_TOKEN 环境变量未配置。为了系统安全，Guardian 已拒绝启动。请在部署环境的 .env 文件或环境变量中设置强访问口令 ACCESS_TOKEN。")
 	}
 	return c
 }

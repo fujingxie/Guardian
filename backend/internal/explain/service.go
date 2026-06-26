@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -283,32 +286,57 @@ func (s *Service) askDeepSeek(ctx context.Context, eventType, sourceIP, detailSt
 	return "", fmt.Errorf("empty choices content")
 }
 
-var ipCache sync.Map // 一级内存缓存，避免高频请求相同 IP
+var (
+	ipCache      sync.Map
+	ipCacheCount int64
+)
+
+func (s *Service) storeToMemoryCache(ip, loc string) {
+	if atomic.LoadInt64(&ipCacheCount) >= 10000 {
+		ipCache = sync.Map{}
+		atomic.StoreInt64(&ipCacheCount, 0)
+	}
+	_, loaded := ipCache.LoadOrStore(ip, loc)
+	if !loaded {
+		atomic.AddInt64(&ipCacheCount, 1)
+	}
+}
 
 // lookupIP 通过 ip-api.com 查询 IP 地理位置并进行二级缓存（Redis 30天 + 本地内存）。
-func (s *Service) lookupIP(ctx context.Context, ip string) string {
-	if ip == "" || strings.HasPrefix(ip, "127.") || ip == "localhost" || strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") {
+func (s *Service) lookupIP(ctx context.Context, ipStr string) string {
+	ipStr = strings.TrimSpace(ipStr)
+	if ipStr == "" || ipStr == "localhost" {
+		return ""
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return "" // 非法 IP 格式直接拒绝查询
+	}
+
+	// 拦截回环、私有、链路本地等地址
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return ""
 	}
 
 	// 1. 内存缓存读取
-	if val, ok := ipCache.Load(ip); ok {
+	if val, ok := ipCache.Load(ipStr); ok {
 		return val.(string)
 	}
 
 	// 2. Redis 缓存读取
-	cacheKey := "ip:location:" + ip
+	cacheKey := "ip:location:" + ipStr
 	if s.rds != nil {
 		if val, err := s.rds.Get(ctx, cacheKey).Result(); err == nil && val != "" {
-			ipCache.Store(ip, val)
+			s.storeToMemoryCache(ipStr, val)
 			return val
 		}
 	}
 
 	// 3. 在线 API 查归属地
 	loc := ""
-	url := fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", ip)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	apiURL := fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", url.PathEscape(ipStr))
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err == nil {
 		resp, err := s.httpClient.Do(req)
 		if err == nil {
@@ -342,7 +370,7 @@ func (s *Service) lookupIP(ctx context.Context, ip string) string {
 	}
 
 	// 4. 写回缓存
-	ipCache.Store(ip, loc)
+	s.storeToMemoryCache(ipStr, loc)
 	if s.rds != nil {
 		_ = s.rds.Set(ctx, cacheKey, loc, 30*24*time.Hour).Err()
 	}

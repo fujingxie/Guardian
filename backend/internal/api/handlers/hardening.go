@@ -64,7 +64,15 @@ func (h *HardeningHandler) ApplyHardening(c *gin.Context) {
 		return
 	}
 
-	// 开启任务
+	// 1. 任务幂等：检查最近 60 秒内是否已经存在 pending 或 trial 的任务
+	if latestJob, err := h.Store.GetLatestJobByKey(c.Request.Context(), id, key); err == nil && latestJob != nil {
+		if (latestJob.Status == "pending" || latestJob.Status == "trial") && time.Since(latestJob.CreatedAt) < 60*time.Second {
+			c.JSON(http.StatusOK, gin.H{"ok": true, "jobId": latestJob.ID})
+			return
+		}
+	}
+
+	// 2. 开启新任务
 	jobID, err := h.Store.CreateJob(c.Request.Context(), id, key, "pending")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
@@ -74,23 +82,34 @@ func (h *HardeningHandler) ApplyHardening(c *gin.Context) {
 	adminIP := c.ClientIP()
 	if adminIP != "" {
 		// 记录当前访问 IP，方便 Agent 写入白名单防止误拦截
-		_ = h.Servers.UpdateAdminIP(c.Request.Context(), id, adminIP)
+		if err := h.Servers.UpdateAdminIP(c.Request.Context(), id, adminIP); err != nil {
+			log.Printf("[handlers] UpdateAdminIP %s error: %v", id, err)
+		}
+	}
+
+	// 动态从数据库中单点读取判定风险等级
+	isHighRisk := false
+	if item, err := h.Store.GetItem(c.Request.Context(), key); err == nil && item != nil {
+		isHighRisk = item.RiskLevel == "high"
 	}
 
 	// WSS 命令投递
 	cmdMsg := map[string]any{
 		"type": "command",
 		"payload": map[string]any{
-			"cmd":     "run_hardening",
-			"jobId":   jobID,
-			"key":     key,
-			"adminIp": adminIP,
+			"cmd":      "run_hardening",
+			"jobId":    jobID,
+			"key":      key,
+			"adminIp":  adminIP,
+			"highRisk": isHighRisk,
 		},
 	}
 	if err := h.Hub.CommandTo(id, cmdMsg); err != nil {
 		// 回滚数据库状态为 failed
 		failedErr := "agent not connected"
-		_ = h.Store.UpdateJobStatus(c.Request.Context(), jobID, "failed", &failedErr)
+		if err := h.Store.UpdateJobStatus(c.Request.Context(), jobID, "failed", &failedErr); err != nil {
+			log.Printf("[handlers] UpdateJobStatus failed rollback error: %v", err)
+		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent_disconnected"})
 		return
 	}
@@ -115,13 +134,7 @@ func (h *HardeningHandler) ConfirmHardening(c *gin.Context) {
 		return
 	}
 
-	// 更新为 applied 状态
-	if err := h.Store.UpdateJobStatus(c.Request.Context(), job.ID, "applied", nil); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
-		return
-	}
-
-	// 投递 confirm 指令给 Agent 清除本地死人开关
+	// 1. 投递 confirm 指令给 Agent 清除本地死人开关；必须投递成功才置为 applied
 	cmdMsg := map[string]any{
 		"type": "command",
 		"payload": map[string]any{
@@ -130,7 +143,17 @@ func (h *HardeningHandler) ConfirmHardening(c *gin.Context) {
 			"key":   key,
 		},
 	}
-	_ = h.Hub.CommandTo(id, cmdMsg) // 失败非阻塞，因为后端状态已 applied
+	if err := h.Hub.CommandTo(id, cmdMsg); err != nil {
+		log.Printf("[handlers] failed to deliver confirm cmd to Agent %s: %v", id, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent_disconnected"})
+		return
+	}
+
+	// 2. 更新为 applied 状态
+	if err := h.Store.UpdateJobStatus(c.Request.Context(), job.ID, "applied", nil); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
+		return
+	}
 
 	log.Printf("[AUDIT] [ServerID:%s] [Action:ConfirmHardening] [Key:%s] [JobID:%s]", id, key, job.ID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -173,7 +196,9 @@ func (h *HardeningHandler) RollbackHardening(c *gin.Context) {
 			"files": files,
 		},
 	}
-	_ = h.Hub.CommandTo(id, cmdMsg)
+	if err := h.Hub.CommandTo(id, cmdMsg); err != nil {
+		log.Printf("[handlers] rollback CommandTo %s error: %v", id, err)
+	}
 
 	log.Printf("[AUDIT] [ServerID:%s] [Action:RollbackHardening] [Key:%s] [JobID:%s]", id, key, job.ID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

@@ -27,6 +27,13 @@ type Deps struct {
 
 func NewRouter(deps Deps) *gin.Engine {
 	r := gin.New()
+	_ = r.SetTrustedProxies([]string{
+		"127.0.0.1",
+		"::1",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	})
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
 
@@ -66,6 +73,7 @@ func NewRouter(deps Deps) *gin.Engine {
 		// 公开的下载服务（不需要鉴权）
 		r.GET("/install.sh", sh.DownloadInstallScript)
 		apiGroup.GET("/agent/download", sh.DownloadAgent)
+		apiGroup.GET("/agent/download/sha256", sh.DownloadAgentSHA256)
 	}
 	if deps.MetricsStore != nil {
 		mh := &handlers.MetricsHandler{Store: deps.MetricsStore}

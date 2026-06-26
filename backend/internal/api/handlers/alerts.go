@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +34,16 @@ type AlertResp struct {
 func (h *AlertsHandler) GetAlerts(c *gin.Context) {
 	serverID := c.Param("id")
 
-	events, err := h.Store.ListAlerts(c.Request.Context(), serverID)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	events, err := h.Store.ListAlerts(c.Request.Context(), serverID, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
 		return
@@ -124,6 +134,8 @@ func (h *AlertsHandler) UpdateSettings(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
 		return
 	}
+
+	h.NotifyService.InvalidateCache()
 
 	count, err := h.Servers.CountOnline(c.Request.Context())
 	if err != nil {

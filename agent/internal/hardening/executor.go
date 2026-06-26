@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -22,6 +23,63 @@ func NewExecutor() *Executor {
 		log.Printf("[executor] running in MOCK mode (Darwin/macOS detected), redirected config to %s", mockDir)
 	}
 	return &Executor{mockDir: mockDir}
+}
+
+func isAllowedPath(path string) bool {
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, "/") {
+		return false
+	}
+	allowedPrefixes := []string{
+		"/etc/ssh/",
+		"/etc/ufw/",
+		"/etc/fail2ban/",
+		"/etc/apt/",
+	}
+	for _, pref := range allowedPrefixes {
+		if strings.HasPrefix(cleanPath, pref) {
+			return true
+		}
+	}
+	return false
+}
+
+func updateSSHConfigLine(content, option, value string) string {
+	re := regexp.MustCompile("(?i)(?m)^[#\\s]*" + regexp.QuoteMeta(option) + "\\s+.*$")
+	newLine := option + " " + value
+	if re.MatchString(content) {
+		return re.ReplaceAllString(content, newLine)
+	}
+	if !strings.HasSuffix(content, "\n") && content != "" {
+		content += "\n"
+	}
+	return content + newLine + "\n"
+}
+
+func (e *Executor) getCurrentSSHPorts() []string {
+	p := e.GetConfigPath("/etc/ssh/sshd_config")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return []string{"22"}
+	}
+	var ports []string
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(line), "port ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				ports = append(ports, fields[1])
+			}
+		}
+	}
+	if len(ports) == 0 {
+		return []string{"22"}
+	}
+	return ports
 }
 
 // GetConfigPath 映射文件真实物理路径（如果是 Mock，返回 ./mock_etc/...）
@@ -75,7 +133,7 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		snapshot["/etc/ssh/sshd_config"] = string(oldData)
 
 		// 4. 执行替换
-		newContent := strings.ReplaceAll(string(oldData), "PasswordAuthentication yes", "PasswordAuthentication no")
+		newContent := updateSSHConfigLine(string(oldData), "PasswordAuthentication", "no")
 		if err := os.WriteFile(p, []byte(newContent), 0o600); err != nil {
 			return nil, err
 		}
@@ -99,11 +157,7 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		snapshot["/etc/ssh/sshd_config"] = string(oldData)
 
 		// 默认改到 49222 端口
-		newContent := strings.ReplaceAll(string(oldData), "Port 22", "Port 49222")
-		// 如果原本没有 Port 22，追加监听 Port 49222
-		if !strings.Contains(newContent, "Port 49222") {
-			newContent += "\nPort 49222"
-		}
+		newContent := updateSSHConfigLine(string(oldData), "Port", "49222")
 		if err := os.WriteFile(p, []byte(newContent), 0o600); err != nil {
 			return nil, err
 		}
@@ -125,7 +179,7 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		}
 		snapshot["/etc/ssh/sshd_config"] = string(oldData)
 
-		newContent := strings.ReplaceAll(string(oldData), "PermitRootLogin yes", "PermitRootLogin no")
+		newContent := updateSSHConfigLine(string(oldData), "PermitRootLogin", "no")
 		if err := os.WriteFile(p, []byte(newContent), 0o600); err != nil {
 			return nil, err
 		}
@@ -149,19 +203,53 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 
 		if e.mockDir == "" {
 			// Linux 环境下执行 ufw
-			_ = exec.Command("ufw", "default", "deny", "incoming").Run()
-			_ = exec.Command("ufw", "default", "allow", "outgoing").Run()
-			_ = exec.Command("ufw", "allow", "22/tcp").Run() // 保证 SSH 端口放行
-			_ = exec.Command("ufw", "allow", "49222/tcp").Run()
+			if err := exec.Command("ufw", "default", "deny", "incoming").Run(); err != nil {
+				return nil, fmt.Errorf("ufw default deny incoming: %w", err)
+			}
+			if err := exec.Command("ufw", "default", "allow", "outgoing").Run(); err != nil {
+				return nil, fmt.Errorf("ufw default allow outgoing: %w", err)
+			}
+			
+			// 动态读取并放行当前 SSH 实际运行的全部端口
+			sshPorts := e.getCurrentSSHPorts()
+			for _, port := range sshPorts {
+				if err := exec.Command("ufw", "allow", port+"/tcp").Run(); err != nil {
+					return nil, fmt.Errorf("ufw allow ssh port %s: %w", port, err)
+				}
+			}
+			
+			// 额外防范，放行默认与安全加固的 SSH 端口作为兜底
+			for _, port := range []string{"22", "49222"} {
+				found := false
+				for _, p := range sshPorts {
+					if p == port {
+						found = true
+						break
+					}
+				}
+				if !found {
+					if err := exec.Command("ufw", "allow", port+"/tcp").Run(); err != nil {
+						return nil, fmt.Errorf("ufw allow fallback ssh port %s: %w", port, err)
+					}
+				}
+			}
+
 			if adminIP != "" {
-				_ = exec.Command("ufw", "allow", "from", adminIP).Run() // 加白管理 IP
+				if err := exec.Command("ufw", "allow", "from", adminIP).Run(); err != nil {
+					return nil, fmt.Errorf("ufw allow from adminIP %s: %w", adminIP, err)
+				}
 			}
 			if err := exec.Command("ufw", "--force", "enable").Run(); err != nil {
 				return nil, fmt.Errorf("enable ufw: %w", err)
 			}
 		} else {
 			// Mock 模式
-			newContent := string(oldData) + "\n# UFW ENABLED\n# ALLOW Port 22\n# ALLOW Port 49222\n"
+			newContent := string(oldData) + "\n# UFW ENABLED\n"
+			sshPorts := e.getCurrentSSHPorts()
+			for _, port := range sshPorts {
+				newContent += fmt.Sprintf("# ALLOW Port %s\n", port)
+			}
+			newContent += "# ALLOW Port 22\n# ALLOW Port 49222\n"
 			if adminIP != "" {
 				newContent += fmt.Sprintf("# ALLOW from %s\n", adminIP)
 			}
@@ -182,8 +270,12 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		snapshot["/etc/ufw/user.rules"] = string(oldData)
 
 		if e.mockDir == "" {
-			_ = exec.Command("ufw", "allow", "80/tcp").Run()
-			_ = exec.Command("ufw", "allow", "443/tcp").Run()
+			if err := exec.Command("ufw", "allow", "80/tcp").Run(); err != nil {
+				return nil, fmt.Errorf("ufw allow port 80: %w", err)
+			}
+			if err := exec.Command("ufw", "allow", "443/tcp").Run(); err != nil {
+				return nil, fmt.Errorf("ufw allow port 443: %w", err)
+			}
 		} else {
 			newContent := string(oldData) + "\n# ALLOW Port 80\n# ALLOW Port 443\n"
 			_ = os.WriteFile(p, []byte(newContent), 0o600)
@@ -204,13 +296,21 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 
 		if e.mockDir == "" {
 			// 安装 fail2ban
-			_ = exec.Command("apt-get", "update").Run()
-			_ = exec.Command("apt-get", "install", "-y", "fail2ban").Run()
+			if err := exec.Command("apt-get", "update").Run(); err != nil {
+				return nil, fmt.Errorf("apt-get update: %w", err)
+			}
+			if err := exec.Command("apt-get", "install", "-y", "fail2ban").Run(); err != nil {
+				return nil, fmt.Errorf("apt-get install fail2ban: %w", err)
+			}
 
 			// 写入配置
 			f2bConfig := "[sshd]\nenabled = true\nport = ssh\nfilter = sshd\nmaxretry = 5\nbantime = 10m\n"
-			_ = os.WriteFile("/etc/fail2ban/jail.local", []byte(f2bConfig), 0o644)
-			_ = exec.Command("systemctl", "restart", "fail2ban").Run()
+			if err := os.WriteFile("/etc/fail2ban/jail.local", []byte(f2bConfig), 0o644); err != nil {
+				return nil, fmt.Errorf("write jail.local config error: %w", err)
+			}
+			if err := exec.Command("systemctl", "restart", "fail2ban").Run(); err != nil {
+				return nil, fmt.Errorf("restart fail2ban service: %w", err)
+			}
 		} else {
 			newContent := string(oldData) + "\n[sshd]\nenabled = true\n"
 			_ = os.WriteFile(p, []byte(newContent), 0o600)
@@ -229,10 +329,7 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		}
 		snapshot["/etc/ssh/sshd_config"] = string(oldData)
 
-		newContent := strings.ReplaceAll(string(oldData), "MaxAuthTries 6", "MaxAuthTries 3")
-		if !strings.Contains(newContent, "MaxAuthTries") {
-			newContent += "\nMaxAuthTries 3"
-		}
+		newContent := updateSSHConfigLine(string(oldData), "MaxAuthTries", "3")
 		if err := os.WriteFile(p, []byte(newContent), 0o600); err != nil {
 			return nil, err
 		}
@@ -255,9 +352,13 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 		snapshot["/etc/apt/apt.conf.d/50unattended-upgrades"] = string(oldData)
 
 		if e.mockDir == "" {
-			_ = exec.Command("apt-get", "install", "-y", "unattended-upgrades").Run()
+			if err := exec.Command("apt-get", "install", "-y", "unattended-upgrades").Run(); err != nil {
+				return nil, fmt.Errorf("install unattended-upgrades: %w", err)
+			}
 			autoUpgradeConf := "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n"
-			_ = os.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades", []byte(autoUpgradeConf), 0o644)
+			if err := os.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades", []byte(autoUpgradeConf), 0o644); err != nil {
+				return nil, fmt.Errorf("write 20auto-upgrades config error: %w", err)
+			}
 		} else {
 			newContent := string(oldData) + "\n// AUTO UPDATE ENABLED\n"
 			_ = os.WriteFile(p, []byte(newContent), 0o600)
@@ -273,6 +374,9 @@ func (e *Executor) Execute(ctx context.Context, key string, adminIP string) (map
 // Rollback 根据文件快照数据还原系统配置，并重启对应服务
 func (e *Executor) Rollback(ctx context.Context, files map[string]string) error {
 	for path, content := range files {
+		if !isAllowedPath(path) {
+			return fmt.Errorf("安全拒绝：不允许回滚非加固白名单的物理路径 %s", path)
+		}
 		p := e.GetConfigPath(path)
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 			return err
@@ -292,7 +396,9 @@ func (e *Executor) Rollback(ctx context.Context, files map[string]string) error 
 		// 还原后在真实 Linux 下执行必要恢复
 		if _, ok := files["/etc/ufw/user.rules"]; ok {
 			// 如果快照有防火墙配置，可能需要重载或禁用
-			_ = exec.Command("ufw", "disable").Run()
+			if err := exec.Command("ufw", "disable").Run(); err != nil {
+				log.Printf("[executor] rollback disable ufw error: %v", err)
+			}
 		}
 	}
 

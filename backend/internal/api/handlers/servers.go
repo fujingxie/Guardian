@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -279,6 +280,25 @@ func (h *ServersHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+func (h *ServersHandler) getAgentSHA256(arch string) string {
+	filePath := fmt.Sprintf("/app/agents/agent-linux-%s", arch)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		filePath = fmt.Sprintf("../agent/agent-linux-%s", arch)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			filePath = "../agent/agent_bin"
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				return ""
+			}
+		}
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash)
+}
+
 // GET /install.sh
 func (h *ServersHandler) DownloadInstallScript(c *gin.Context) {
 	filePath := "/app/install.sh"
@@ -289,8 +309,22 @@ func (h *ServersHandler) DownloadInstallScript(c *gin.Context) {
 			return
 		}
 	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+		return
+	}
+
+	content := string(data)
+	amd64Hash := h.getAgentSHA256("amd64")
+	arm64Hash := h.getAgentSHA256("arm64")
+
+	content = strings.ReplaceAll(content, "{{AMD64_SHA256}}", amd64Hash)
+	content = strings.ReplaceAll(content, "{{ARM64_SHA256}}", arm64Hash)
+
 	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.File(filePath)
+	c.String(http.StatusOK, content)
 }
 
 // GET /api/agent/download?arch=amd64
@@ -318,4 +352,34 @@ func (h *ServersHandler) DownloadAgent(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=guardian-agent-%s", arch))
 	c.Header("Content-Type", "application/octet-stream")
 	c.File(filePath)
+}
+
+// GET /api/agent/download/sha256?arch=amd64
+func (h *ServersHandler) DownloadAgentSHA256(c *gin.Context) {
+	arch := c.Query("arch")
+	if arch != "amd64" && arch != "arm64" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request", "message": "unsupported architecture"})
+		return
+	}
+
+	filePath := fmt.Sprintf("/app/agents/agent-linux-%s", arch)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		filePath = fmt.Sprintf("../agent/agent-linux-%s", arch)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			filePath = "../agent/agent_bin"
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "agent binary not found"})
+				return
+			}
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+		return
+	}
+
+	hash := sha256.Sum256(data)
+	c.String(http.StatusOK, "%x", hash)
 }
