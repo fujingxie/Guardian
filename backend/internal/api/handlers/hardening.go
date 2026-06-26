@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -94,6 +95,7 @@ func (h *HardeningHandler) ApplyHardening(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[AUDIT] [ServerID:%s] [Action:ApplyHardening] [Key:%s] [JobID:%s]", id, key, jobID)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "jobId": jobID})
 }
 
@@ -130,6 +132,7 @@ func (h *HardeningHandler) ConfirmHardening(c *gin.Context) {
 	}
 	_ = h.Hub.CommandTo(id, cmdMsg) // 失败非阻塞，因为后端状态已 applied
 
+	log.Printf("[AUDIT] [ServerID:%s] [Action:ConfirmHardening] [Key:%s] [JobID:%s]", id, key, job.ID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -172,6 +175,7 @@ func (h *HardeningHandler) RollbackHardening(c *gin.Context) {
 	}
 	_ = h.Hub.CommandTo(id, cmdMsg)
 
+	log.Printf("[AUDIT] [ServerID:%s] [Action:RollbackHardening] [Key:%s] [JobID:%s]", id, key, job.ID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

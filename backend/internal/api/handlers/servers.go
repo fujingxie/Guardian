@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -44,6 +45,8 @@ func (h *ServersHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
 		return
 	}
+
+	log.Printf("[AUDIT] [Action:CreateServer] [ServerID:%s] [Name:%s]", id, name)
 
 	cmd := fmt.Sprintf(
 		"curl -fsSL %s/install.sh | sudo bash -s -- --token %s --console %s",
@@ -258,6 +261,7 @@ func (h *ServersHandler) Update(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[AUDIT] [ServerID:%s] [Action:RenameServer] [NewName:%s]", id, name)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -271,6 +275,7 @@ func (h *ServersHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
 		return
 	}
+	log.Printf("[AUDIT] [ServerID:%s] [Action:DeleteServer]", id)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

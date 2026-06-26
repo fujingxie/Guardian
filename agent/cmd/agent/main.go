@@ -201,8 +201,10 @@ func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Exec
 					if err := dm.SetTrial(job); err != nil {
 						log.Printf("[agent] save trial job to disk: %v", err)
 					} else {
-						log.Printf("[agent] trial job %s recorded locally, rollback at %s", cmd.JobID, rollbackAt.Format(time.RFC3339))
+						log.Printf("[AUDIT] [Action:ApplyHardening] [Key:%s] [JobID:%s] [Status:trial]", cmd.Key, cmd.JobID)
 					}
+				} else {
+					log.Printf("[AUDIT] [Action:ApplyHardening] [Key:%s] [JobID:%s] [Status:applied]", cmd.Key, cmd.JobID)
 				}
 
 				reply := conn.Envelope{
@@ -214,7 +216,7 @@ func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Exec
 
 		case "confirm_hardening":
 			dm.Clear()
-			log.Printf("[agent] job %s confirmed by console, trial active cleared.", cmd.JobID)
+			log.Printf("[AUDIT] [Action:ConfirmHardening] [JobID:%s]", cmd.JobID)
 
 		case "rollback":
 			go func() {
@@ -223,7 +225,7 @@ func onMessage(ctx context.Context, dm *deadman.Deadman, execObj *hardening.Exec
 					log.Printf("[agent] forced rollback error: %v", err)
 				} else {
 					dm.Clear()
-					log.Printf("[agent] forced rollback completed, trial cleared.")
+					log.Printf("[AUDIT] [Action:RollbackHardening] [JobID:%s]", cmd.JobID)
 				}
 			}()
 

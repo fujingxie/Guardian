@@ -77,7 +77,7 @@ func (d *Deadman) StartMonitor(ctx context.Context, exec *hardening.Executor) {
 	// 启动自检
 	if job, err := d.GetActive(); err == nil && job != nil {
 		if time.Now().After(job.RollbackAt) {
-			log.Printf("[deadman] Found stale trial job %s (key: %s) on startup that has timed out. Triggering autonomous rollback!", job.JobID, job.Key)
+			log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:StaleTrialOnStartup] [Key:%s] [JobID:%s]", job.Key, job.JobID)
 			if err := exec.Rollback(ctx, job.Files); err == nil {
 				d.Clear()
 			} else {
@@ -102,7 +102,7 @@ func (d *Deadman) StartMonitor(ctx context.Context, exec *hardening.Executor) {
 					continue
 				}
 				if time.Now().After(job.RollbackAt) {
-					log.Printf("[deadman] Confirm timeout reached for trial job %s (key: %s). Initiating local autonomous rollback!", job.JobID, job.Key)
+					log.Printf("[AUDIT] [Action:AutonomousRollback] [Reason:TimeoutReached] [Key:%s] [JobID:%s]", job.Key, job.JobID)
 					if err := exec.Rollback(ctx, job.Files); err == nil {
 						log.Printf("[deadman] Autonomous rollback succeeded. Connection settings reverted.")
 						d.Clear()
