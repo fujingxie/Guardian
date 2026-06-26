@@ -182,3 +182,15 @@ func (s *Servers) List(ctx context.Context) ([]Server, error) {
 	}
 	return out, rows.Err()
 }
+
+// UpdateName 修改服务器名称。
+func (s *Servers) UpdateName(ctx context.Context, id, name string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE servers SET name = $2 WHERE id = $1`, id, name)
+	return err
+}
+
+// Delete 删除指定服务器。外键级联删除 (ON DELETE CASCADE) 会自动清理相关联的表记录。
+func (s *Servers) Delete(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM servers WHERE id = $1`, id)
+	return err
+}

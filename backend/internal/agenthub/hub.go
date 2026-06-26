@@ -98,6 +98,20 @@ func (h *Hub) Touch(ctx context.Context, serverID string) {
 	_ = h.rds.Expire(ctx, onlineKey(serverID), OnlineTTL).Err()
 }
 
+// Disconnect 主动断开指定服务器的 WebSocket 连接（比如用户删除服务器时），以防止其误报离线。
+func (h *Hub) Disconnect(serverID string) {
+	h.mu.Lock()
+	e, ok := h.conns[serverID]
+	if ok {
+		delete(h.conns, serverID)
+		_ = e.conn.Close()
+	}
+	h.mu.Unlock()
+
+	// 从 Redis 删除在线标记
+	_ = h.rds.Del(context.Background(), onlineKey(serverID)).Err()
+}
+
 // CommandTo 给目标 agent 推一条命令；不在线则报错。
 var ErrNotConnected = errors.New("agent not connected")
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/guardian/backend/internal/agentauth"
+	"github.com/guardian/backend/internal/agenthub"
 	"github.com/guardian/backend/internal/store"
 )
 
@@ -17,6 +18,7 @@ type ServersHandler struct {
 	Store          *store.Servers
 	Metrics        *store.Metrics
 	ConsoleBaseURL string // 例如 https://guardian.example.com —— 用于拼安装命令
+	Hub            *agenthub.Hub
 }
 
 type addServerReq struct {
@@ -229,4 +231,44 @@ func randSuffix(n int) string {
 		panic(err)
 	}
 	return hex.EncodeToString(buf)[:n]
+}
+
+type updateServerReq struct {
+	Name string `json:"name" binding:"required"`
+}
+
+// PUT /api/servers/:id
+func (h *ServersHandler) Update(c *gin.Context) {
+	id := c.Param("id")
+	var req updateServerReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request", "message": err.Error()})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request", "message": "name cannot be empty"})
+		return
+	}
+
+	if err := h.Store.UpdateName(c.Request.Context(), id, name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// DELETE /api/servers/:id
+func (h *ServersHandler) Delete(c *gin.Context) {
+	id := c.Param("id")
+	if h.Hub != nil {
+		h.Hub.Disconnect(id)
+	}
+	if err := h.Store.Delete(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

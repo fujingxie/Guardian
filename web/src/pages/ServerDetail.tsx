@@ -26,6 +26,35 @@ export default function ServerDetailPage() {
     )
   }, [id])
 
+  async function renameServer() {
+    if (!server) return
+    const newName = window.prompt('请输入新的服务器名称：', server.name)
+    if (newName === null) return
+    const trimmed = newName.trim()
+    if (!trimmed) {
+      alert('名称不能为空')
+      return
+    }
+    try {
+      await api.updateServer(server.id, trimmed)
+      setServer({ ...server, name: trimmed })
+    } catch (e: any) {
+      alert('重命名失败: ' + e.message)
+    }
+  }
+
+  async function deleteServer() {
+    if (!server) return
+    const confirmed = window.confirm(`确定要删除服务器 "${server.name}" 吗？这将会断开其长连接并删除此服务器的所有历史指标、加固记录和安全告警！`)
+    if (!confirmed) return
+    try {
+      await api.deleteServer(server.id)
+      navigate('/')
+    } catch (e: any) {
+      alert('删除失败: ' + e.message)
+    }
+  }
+
   return (
     <AppShell
       topbar={
@@ -53,6 +82,20 @@ export default function ServerDetailPage() {
                 <span className="mono text-[13px] text-[var(--color-text-muted)]">
                   {server.ip}
                 </span>
+                <span className="text-[var(--color-text-muted)]">·</span>
+                <button
+                  onClick={renameServer}
+                  className="cursor-pointer text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline"
+                >
+                  重命名
+                </button>
+                <span className="text-[var(--color-text-muted)]">·</span>
+                <button
+                  onClick={deleteServer}
+                  className="cursor-pointer text-[13px] text-red-500 hover:text-red-700 hover:underline"
+                >
+                  删除
+                </button>
               </div>
               <span
                 className={

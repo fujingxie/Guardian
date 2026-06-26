@@ -61,15 +61,29 @@ func (h *AlertsHandler) GetSettings(c *gin.Context) {
 	}
 
 	if channels == nil {
-		channels = map[string]any{
-			"email":      "",
-			"telegram":   "",
-			"serverChan": "",
-			"enabled": map[string]bool{
-				"email":      false,
-				"telegram":   false,
-				"serverChan": false,
-			},
+		channels = make(map[string]any)
+	}
+
+	// 补全默认字段，避免前端解构报错
+	for _, key := range []string{"email", "telegram", "serverChan"} {
+		if _, ok := channels[key]; !ok {
+			channels[key] = ""
+		}
+	}
+
+	var enabled map[string]any
+	if val, ok := channels["enabled"]; ok {
+		if m, ok := val.(map[string]any); ok {
+			enabled = m
+		}
+	}
+	if enabled == nil {
+		enabled = make(map[string]any)
+		channels["enabled"] = enabled
+	}
+	for _, key := range []string{"email", "telegram", "serverChan"} {
+		if _, ok := enabled[key]; !ok {
+			enabled[key] = false
 		}
 	}
 

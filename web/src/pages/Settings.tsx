@@ -136,7 +136,7 @@ export default function SettingsPage() {
           {settings ? (
             channels.map((c, i) => {
               const value = (settings.notify[c.key] as string | undefined) ?? ''
-              const enabled = settings.notify.enabled[c.key]
+              const enabled = settings.notify.enabled?.[c.key] ?? false
               const canTest = !!value
               return (
                 <div

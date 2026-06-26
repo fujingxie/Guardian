@@ -55,10 +55,13 @@ func NewRouter(deps Deps) *gin.Engine {
 			Store:          deps.ServersStore,
 			Metrics:        deps.MetricsStore,
 			ConsoleBaseURL: deps.ConsoleBaseURL,
+			Hub:            deps.Hub,
 		}
 		protected.POST("/servers", sh.Create)
 		protected.GET("/servers", sh.List)
 		protected.GET("/servers/:id", sh.Get)
+		protected.PUT("/servers/:id", sh.Update)
+		protected.DELETE("/servers/:id", sh.Delete)
 	}
 	if deps.MetricsStore != nil {
 		mh := &handlers.MetricsHandler{Store: deps.MetricsStore}

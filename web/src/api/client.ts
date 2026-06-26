@@ -125,6 +125,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+
+  updateServer: (id: string, name: string) =>
+    request<{ ok: boolean }>(`/api/servers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteServer: (id: string) =>
+    request<{ ok: boolean }>(`/api/servers/${id}`, {
+      method: 'DELETE',
+    }),
 }
 
 export { HttpError }

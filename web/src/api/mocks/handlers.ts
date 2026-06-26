@@ -164,4 +164,22 @@ export const handlers = [
       installCommand: `curl -fsSL https://guardian.example.com/install.sh | sudo bash -s -- --token ${enrollmentToken} --console https://guardian.example.com`,
     })
   }),
+
+  http.put('/api/servers/:id', async ({ request, params }) => {
+    if (!authed(request)) return new HttpResponse(null, { status: 401 })
+    const body = (await request.json()) as { name: string }
+    const sv = servers.find((s) => s.id === params.id)
+    if (!sv) return new HttpResponse(null, { status: 404 })
+    sv.name = body.name
+    return HttpResponse.json({ ok: true })
+  }),
+
+  http.delete('/api/servers/:id', async ({ request, params }) => {
+    if (!authed(request)) return new HttpResponse(null, { status: 401 })
+    const idx = servers.findIndex((s) => s.id === params.id)
+    if (idx !== -1) {
+      servers.splice(idx, 1)
+    }
+    return HttpResponse.json({ ok: true })
+  }),
 ]
