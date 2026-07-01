@@ -119,8 +119,8 @@ export const summary: SummaryStats = {
   yesterdayDelta: 12,
 }
 
-// 24 小时指标曲线 —— 每个服务器一份
-export function buildMetricSeries(serverId: string): MetricPoint[] {
+// 指标曲线 —— 每个服务器一份，默认近 24 小时。
+export function buildMetricSeries(serverId: string, range = '24h'): MetricPoint[] {
   const seed = serverId
     .split('')
     .reduce((acc, c) => acc + c.charCodeAt(0), 0)
@@ -130,8 +130,11 @@ export function buildMetricSeries(serverId: string): MetricPoint[] {
   }
   const points: MetricPoint[] = []
   const now = Date.now()
-  for (let i = 144; i >= 0; i--) {
-    const ts = new Date(now - i * 10 * 60 * 1000).toISOString()
+  const totalMinutes = parseRangeMinutes(range)
+  const stepMinutes = totalMinutes <= 60 ? 2 : totalMinutes <= 360 ? 5 : 10
+  const sampleCount = Math.floor(totalMinutes / stepMinutes)
+  for (let i = sampleCount; i >= 0; i--) {
+    const ts = new Date(now - i * stepMinutes * 60 * 1000).toISOString()
     const wave = (Math.sin(i / 6) + 1) / 2
     const cpu = Math.round(15 + wave * 45 + rand(i) * 18)
     const mem = Math.round(40 + Math.sin(i / 9) * 12 + rand(i + 1) * 14)
@@ -145,6 +148,14 @@ export function buildMetricSeries(serverId: string): MetricPoint[] {
     })
   }
   return points
+}
+
+function parseRangeMinutes(range: string) {
+  if (range.endsWith('h')) {
+    const hours = Number(range.slice(0, -1))
+    if (Number.isFinite(hours) && hours > 0) return hours * 60
+  }
+  return 24 * 60
 }
 
 export function buildHardening(serverId: string): HardeningItem[] {

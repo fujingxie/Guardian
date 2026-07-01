@@ -62,7 +62,13 @@ export const handlers = [
   http.get('/api/servers/:id/metrics', async ({ request, params }) => {
     if (!authed(request)) return new HttpResponse(null, { status: 401 })
     await delay(200)
-    return HttpResponse.json({ points: buildMetricSeries(params.id as string) })
+    const url = new URL(request.url)
+    return HttpResponse.json({
+      points: buildMetricSeries(
+        params.id as string,
+        url.searchParams.get('range') ?? '24h',
+      ),
+    })
   }),
 
   http.get('/api/servers/:id/hardening', async ({ request, params }) => {
