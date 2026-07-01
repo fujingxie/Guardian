@@ -59,6 +59,7 @@ export interface HardeningItem {
 
 export type AlertKind = 'bruteforce' | 'port_scan' | 'new_login' | 'metric_threshold' | 'offline' | 'unknown'
 export type Severity = 'high' | 'medium' | 'info'
+export type AlertPushType = AlertKind
 
 export interface Alert {
   id: string
@@ -86,6 +87,7 @@ export interface NotifySettings {
   email?: string
   telegram?: string
   serverChan?: string
+  alertTypes: Record<AlertPushType, boolean>
   enabled: {
     email: boolean
     telegram: boolean
@@ -162,4 +164,3 @@ export interface InventoryData {
   services: ServiceItem[]
   packages: PackageItem[]
 }
-

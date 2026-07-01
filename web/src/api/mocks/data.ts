@@ -1,10 +1,12 @@
 import type {
   Alert,
+  AlertStats,
   HardeningItem,
   MetricPoint,
   Server,
   Settings,
   SummaryStats,
+  TimelinePoint,
 } from '@/api/types'
 
 // 一组演示数据，对齐设计稿中的 6 台机器
@@ -263,11 +265,71 @@ export function buildAlerts(serverId: string): Alert[] {
   }))
 }
 
+export function buildAlertsTimeline(serverId: string): TimelinePoint[] {
+  const seed = serverId
+    .split('')
+    .reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const now = Date.now()
+  return Array.from({ length: 7 }, (_, idx) => {
+    const dayOffset = 6 - idx
+    const d = new Date(now - dayOffset * 24 * 60 * 60 * 1000)
+    const base = Math.max(0, Math.round(Math.sin(seed + idx) * 12 + idx * 8))
+    return {
+      date: d.toISOString().slice(0, 10),
+      high: idx % 3 === 0 ? Math.round(base * 0.25) : 0,
+      medium: Math.round(base * 0.7),
+      info: Math.round(base * 0.35),
+    }
+  })
+}
+
+export function buildAlertStats(): AlertStats {
+  return {
+    topIPs: [
+      { ip: '2.57.121.25', country: '英国', count: 86819 },
+      { ip: '91.92.40.240', country: '保加利亚', count: 48050 },
+      { ip: '92.118.39.77', country: '美国', count: 33638 },
+      { ip: '45.227.254.170', country: '立陶宛', count: 21528 },
+      { ip: '91.92.40.204', country: '未知', count: 21111 },
+      { ip: '2.57.121.112', country: '英国', count: 19675 },
+      { ip: '185.191.126.213', country: '荷兰', count: 16820 },
+      { ip: '45.146.130.188', country: '新加坡', count: 10422 },
+      { ip: '89.248.163.35', country: '罗马尼亚', count: 8205 },
+      { ip: '43.134.10.8', country: '中国', count: 7219 },
+    ],
+    countries: [
+      { country: '未知', count: 120000 },
+      { country: '英国', count: 88000 },
+      { country: '保加利亚', count: 52000 },
+      { country: '荷兰', count: 43000 },
+      { country: '美国', count: 36000 },
+      { country: '中国', count: 24000 },
+      { country: '新加坡', count: 18000 },
+      { country: '香港', count: 15000 },
+      { country: '印度', count: 9000 },
+      { country: '德国', count: 7200 },
+      { country: '立陶宛', count: 6800 },
+      { country: '法国', count: 5200 },
+      { country: '加拿大', count: 3600 },
+      { country: '巴西', count: 2600 },
+      { country: '日本', count: 2100 },
+    ],
+  }
+}
+
 export const settings: Settings = {
   notify: {
     email: 'me@example.com',
     telegram: '',
     serverChan: '',
+    alertTypes: {
+      bruteforce: true,
+      port_scan: true,
+      new_login: true,
+      metric_threshold: true,
+      offline: true,
+      unknown: true,
+    },
     enabled: { email: true, telegram: false, serverChan: false },
   },
   version: { console: '0.1.0', agent: '0.1.0', agentsOnline: '5 / 6' },

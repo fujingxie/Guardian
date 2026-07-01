@@ -2,10 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Bar,
   BarChart,
-  Cell,
   Legend,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,7 +13,13 @@ import { Pill } from '@/components/ui/Pill'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ShieldCheckIcon } from '@/components/icons'
 import { api } from '@/api/client'
-import type { Alert, AlertStats, Severity, TimelinePoint } from '@/api/types'
+import type {
+  Alert,
+  AlertStats,
+  CountryStats,
+  Severity,
+  TimelinePoint,
+} from '@/api/types'
 import { formatDateTime } from '@/lib/format'
 import { cn } from '@/lib/cn'
 
@@ -27,10 +30,7 @@ interface Props {
 
 type Filter = 'all' | 'unhandled'
 
-const PIE_COLORS = [
-  '#2F6FED', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6',
-  '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1',
-]
+const COUNTRY_LIMIT = 8
 
 export function AlertsTab({ serverId, onCount }: Props) {
   const [alerts, setAlerts] = useState<Alert[] | null>(null)
@@ -65,7 +65,7 @@ export function AlertsTab({ serverId, onCount }: Props) {
   return (
     <div className="flex flex-col gap-4">
       {/* 图表行 */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {/* 7 天告警堆叠柱状 */}
         <Card padded={false} className="p-5">
           <div className="mb-3 text-[14px] font-semibold">近 7 天告警分布</div>
@@ -84,10 +84,11 @@ export function AlertsTab({ serverId, onCount }: Props) {
                   />
                   <YAxis
                     allowDecimals={false}
-                    width={28}
+                    width={52}
                     axisLine={false}
                     tickLine={false}
                     tick={{ fontSize: 11, fill: 'var(--color-text-muted)' }}
+                    tickFormatter={formatCompact}
                   />
                   <Tooltip
                     contentStyle={{
@@ -98,6 +99,13 @@ export function AlertsTab({ serverId, onCount }: Props) {
                       boxShadow: 'var(--shadow-sm)',
                     }}
                     labelFormatter={(d) => `${d}`}
+                    formatter={(value: unknown, name: unknown) => {
+                      const count = Number(value)
+                      const label = Number.isFinite(count)
+                        ? count.toLocaleString()
+                        : String(value)
+                      return [`${label} 次`, String(name)]
+                    }}
                   />
                   <Legend
                     iconType="circle"
@@ -113,46 +121,14 @@ export function AlertsTab({ serverId, onCount }: Props) {
           </div>
         </Card>
 
-        {/* 30 天攻击源国家饼图 */}
+        {/* 30 天攻击源国家排行 */}
         <Card padded={false} className="p-5">
           <div className="mb-3 text-[14px] font-semibold">近 30 天攻击源国家</div>
           <div className="h-[220px]">
             {stats === null ? (
               <div className="flex h-full items-center justify-center text-[12px] text-[var(--color-text-muted)]">加载中…</div>
             ) : stats.countries && stats.countries.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={stats.countries}
-                    dataKey="count"
-                    nameKey="country"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={80}
-                    innerRadius={40}
-                    paddingAngle={2}
-                    label={(props: any) => {
-                      const { name, percent } = props
-                      return `${name} ${(percent * 100).toFixed(0)}%`
-                    }}
-                    labelLine={false}
-                  >
-                    {stats.countries.map((_entry, index) => (
-                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'var(--color-surface)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 8,
-                      fontSize: 12,
-                      boxShadow: 'var(--shadow-sm)',
-                    }}
-                    formatter={(value: any, name: any) => [`${value} 次`, name]}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+              <CountryBars countries={stats.countries} />
             ) : (
               <div className="flex h-full items-center justify-center text-[12px] text-[var(--color-text-muted)]">
                 暂无攻击源数据
@@ -244,6 +220,58 @@ export function AlertsTab({ serverId, onCount }: Props) {
           </Card>
         </>
       )}
+    </div>
+  )
+}
+
+function formatCompact(value: unknown) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return String(value ?? '')
+  if (n >= 10000) return `${Math.round(n / 1000) / 10}万`
+  return n.toLocaleString()
+}
+
+function buildCountryRows(countries: CountryStats[]) {
+  const total = countries.reduce((sum, c) => sum + c.count, 0)
+  const head = countries.slice(0, COUNTRY_LIMIT)
+  const tailCount = countries
+    .slice(COUNTRY_LIMIT)
+    .reduce((sum, c) => sum + c.count, 0)
+  const rows =
+    tailCount > 0 ? [...head, { country: '其他', count: tailCount }] : head
+  const max = Math.max(...rows.map((r) => r.count), 1)
+  return rows.map((r) => ({
+    ...r,
+    percent: total > 0 ? (r.count / total) * 100 : 0,
+    width: `${Math.max(2, (r.count / max) * 100)}%`,
+  }))
+}
+
+function CountryBars({ countries }: { countries: CountryStats[] }) {
+  const rows = buildCountryRows(countries)
+  return (
+    <div className="flex h-full flex-col justify-center gap-2.5">
+      {rows.map((row) => (
+        <div key={row.country} className="grid grid-cols-[80px_1fr_92px] items-center gap-3">
+          <div className="truncate text-[12px] font-medium text-[var(--color-text-2)]">
+            {row.country}
+          </div>
+          <div className="h-2.5 overflow-hidden rounded-full bg-[var(--color-divider)]">
+            <div
+              className="h-full rounded-full bg-[var(--color-primary)]"
+              style={{ width: row.width }}
+            />
+          </div>
+          <div className="text-right text-[12px] text-[var(--color-text-muted)]">
+            <span className="tabular-num font-semibold text-[var(--color-text)]">
+              {formatCompact(row.count)}
+            </span>
+            <span className="ml-1 tabular-num">
+              {row.percent.toFixed(row.percent >= 10 ? 0 : 1)}%
+            </span>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

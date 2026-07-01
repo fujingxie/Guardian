@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/guardian/backend/internal/notify"
 	"github.com/guardian/backend/internal/store"
+	"github.com/redis/go-redis/v9"
 )
 
 type Checker struct {
@@ -199,6 +199,6 @@ func (c *Checker) fireAlert(ctx context.Context, serverID, serverName, eventType
 
 	if c.notify != nil {
 		title := fmt.Sprintf("[%s] 系统告警: %s", serverName, eventType)
-		c.notify.Send(ctx, title, plainMsg)
+		c.notify.SendAlert(ctx, eventType, title, plainMsg)
 	}
 }

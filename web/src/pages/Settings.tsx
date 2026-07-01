@@ -7,7 +7,7 @@ import { Toggle } from '@/components/ui/Toggle'
 import { Pill } from '@/components/ui/Pill'
 import { ExternalLinkIcon, ShieldCheckIcon } from '@/components/icons'
 import { api } from '@/api/client'
-import type { Settings } from '@/api/types'
+import type { AlertPushType, Settings } from '@/api/types'
 import { useAccessToken } from '@/hooks/useAccessToken'
 import { cn } from '@/lib/cn'
 
@@ -24,6 +24,50 @@ const channels = [
     placeholder: 'SCT...',
   },
 ]
+
+const alertTypeOptions: Array<{
+  key: AlertPushType
+  label: string
+  description: string
+}> = [
+  {
+    key: 'bruteforce',
+    label: '恶意登录',
+    description: 'Fail2ban 封禁、暴力破解拦截。',
+  },
+  {
+    key: 'port_scan',
+    label: '端口扫描',
+    description: '疑似扫描器探测开放端口。',
+  },
+  {
+    key: 'new_login',
+    label: '新登录提醒',
+    description: '服务器出现新的 SSH 登录行为。',
+  },
+  {
+    key: 'metric_threshold',
+    label: '指标超限',
+    description: 'CPU、内存、磁盘超过阈值。',
+  },
+  {
+    key: 'offline',
+    label: '服务器离线',
+    description: 'Agent 心跳中断或长连接失联。',
+  },
+  {
+    key: 'unknown',
+    label: '系统告警',
+    description: '暂未归类但仍需要留意的事件。',
+  },
+]
+
+type NotifyNumberKey =
+  | 'cpuPctThreshold'
+  | 'cpuDurationMin'
+  | 'memPctThreshold'
+  | 'memDurationMin'
+  | 'diskPctThreshold'
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -75,6 +119,28 @@ export default function SettingsPage() {
         ...settings.notify,
         enabled: { ...settings.notify.enabled, [key]: on },
       },
+    })
+  }
+
+  function toggleAlertType(key: AlertPushType, on: boolean) {
+    if (!settings) return
+    save({
+      ...settings,
+      notify: {
+        ...settings.notify,
+        alertTypes: {
+          ...(settings.notify.alertTypes ?? {}),
+          [key]: on,
+        },
+      },
+    })
+  }
+
+  function patchNotifyNumber(key: NotifyNumberKey, value: number) {
+    if (!settings) return
+    save({
+      ...settings,
+      notify: { ...settings.notify, [key]: value },
     })
   }
 
@@ -191,6 +257,52 @@ export default function SettingsPage() {
           )}
         </Card>
 
+        {/* 推送类型 */}
+        <Card padded={false} className="mb-6">
+          <div className="border-b border-[var(--color-divider)] px-6 py-4">
+            <div className="text-[16px] font-semibold">推送告警类型</div>
+            <div className="mt-0.5 text-[13px] text-[var(--color-text-2)]">
+              关闭后仍会写入告警列表，只是不再主动推送。
+            </div>
+          </div>
+          {settings ? (
+            <div className="grid grid-cols-2 gap-0">
+              {alertTypeOptions.map((item, i) => {
+                const enabled = settings.notify.alertTypes?.[item.key] ?? true
+                return (
+                  <div
+                    key={item.key}
+                    className={cn(
+                      'flex min-h-[88px] items-center gap-3 px-6 py-4',
+                      i % 2 === 0 && 'border-r border-[var(--color-divider)]',
+                      i < alertTypeOptions.length - 2 &&
+                        'border-b border-[var(--color-divider)]',
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-semibold">
+                        {item.label}
+                      </div>
+                      <div className="mt-1 text-[12px] leading-relaxed text-[var(--color-text-2)]">
+                        {item.description}
+                      </div>
+                    </div>
+                    <Toggle
+                      checked={enabled}
+                      onChange={(v) => toggleAlertType(item.key, v)}
+                      ariaLabel={`${item.label} 推送开关`}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="px-6 py-6 text-[13px] text-[var(--color-text-muted)]">
+              加载中…
+            </div>
+          )}
+        </Card>
+
         {/* 阈值告警配置 */}
         <Card padded={false} className="mb-6">
           <div className="border-b border-[var(--color-divider)] px-6 py-4">
@@ -205,22 +317,22 @@ export default function SettingsPage() {
                 label="CPU"
                 pctValue={settings.notify.cpuPctThreshold ?? 85}
                 durValue={settings.notify.cpuDurationMin ?? 5}
-                onPctChange={(v) => patchChannel('cpuPctThreshold' as any, v)}
-                onDurChange={(v) => patchChannel('cpuDurationMin' as any, v)}
+                onPctChange={(v) => patchNotifyNumber('cpuPctThreshold', v)}
+                onDurChange={(v) => patchNotifyNumber('cpuDurationMin', v)}
                 durUnit="分钟"
               />
               <ThresholdRow
                 label="内存"
                 pctValue={settings.notify.memPctThreshold ?? 95}
                 durValue={settings.notify.memDurationMin ?? 3}
-                onPctChange={(v) => patchChannel('memPctThreshold' as any, v)}
-                onDurChange={(v) => patchChannel('memDurationMin' as any, v)}
+                onPctChange={(v) => patchNotifyNumber('memPctThreshold', v)}
+                onDurChange={(v) => patchNotifyNumber('memDurationMin', v)}
                 durUnit="分钟"
               />
               <ThresholdRow
                 label="磁盘"
                 pctValue={settings.notify.diskPctThreshold ?? 95}
-                onPctChange={(v) => patchChannel('diskPctThreshold' as any, v)}
+                onPctChange={(v) => patchNotifyNumber('diskPctThreshold', v)}
               />
             </div>
           ) : (

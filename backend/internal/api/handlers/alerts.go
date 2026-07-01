@@ -114,6 +114,22 @@ func (h *AlertsHandler) GetSettings(c *gin.Context) {
 		}
 	}
 
+	var alertTypes map[string]any
+	if val, ok := channels["alertTypes"]; ok {
+		if m, ok := val.(map[string]any); ok {
+			alertTypes = m
+		}
+	}
+	if alertTypes == nil {
+		alertTypes = make(map[string]any)
+		channels["alertTypes"] = alertTypes
+	}
+	for _, key := range []string{"bruteforce", "port_scan", "new_login", "metric_threshold", "offline", "unknown"} {
+		if _, ok := alertTypes[key]; !ok {
+			alertTypes[key] = true
+		}
+	}
+
 	count, err := h.Servers.CountOnline(c.Request.Context())
 	if err != nil {
 		count = 0

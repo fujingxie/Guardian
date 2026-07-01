@@ -373,7 +373,7 @@ func (h *Handler) handleEvent(ctx context.Context, serverID string, raw json.Raw
 			serverName = h.Hub.GetServerName(ctx, serverID)
 		}
 		title := fmt.Sprintf("[%s] 安全告警: %s", serverName, formatEventTitle(p.EventType))
-		h.Notify.Send(ctx, title, plainMsg)
+		h.Notify.SendAlert(ctx, p.EventType, title, plainMsg)
 	}
 }
 

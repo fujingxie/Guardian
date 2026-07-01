@@ -27,9 +27,10 @@ type SMTPConfig struct {
 }
 
 type ChannelConfig struct {
-	Email      string `json:"email"`
-	Telegram   string `json:"telegram"`
-	ServerChan string `json:"serverChan"`
+	Email      string          `json:"email"`
+	Telegram   string          `json:"telegram"`
+	ServerChan string          `json:"serverChan"`
+	AlertTypes map[string]bool `json:"alertTypes"`
 	Enabled    struct {
 		Email      bool `json:"email"`
 		Telegram   bool `json:"telegram"`
@@ -86,8 +87,45 @@ func (s *Service) GetSettings(ctx context.Context) (*store.NotifySettings, error
 	return ns, nil
 }
 
+// NormalizeAlertType maps low-level event names to the user-facing alert type keys.
+func NormalizeAlertType(eventType string) string {
+	switch eventType {
+	case "":
+		return ""
+	case "bruteforce", "bruteforce_blocked":
+		return "bruteforce"
+	case "port_scan":
+		return "port_scan"
+	case "new_login":
+		return "new_login"
+	case "cpu_usage_high", "mem_usage_high", "disk_usage_high", "metric_threshold":
+		return "metric_threshold"
+	case "offline":
+		return "offline"
+	default:
+		return "unknown"
+	}
+}
+
+func alertTypeEnabled(cc ChannelConfig, eventType string) bool {
+	alertType := NormalizeAlertType(eventType)
+	if alertType == "" || cc.AlertTypes == nil {
+		return true
+	}
+	enabled, ok := cc.AlertTypes[alertType]
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
 // Send 核心推送逻辑。读取当前配置，向所有启用的通道发送通知。
 func (s *Service) Send(ctx context.Context, title, message string) {
+	s.SendAlert(ctx, "", title, message)
+}
+
+// SendAlert 与 Send 一样发送通知，但会先检查该告警类型是否允许推送。
+func (s *Service) SendAlert(ctx context.Context, eventType, title, message string) {
 	ns, err := s.GetSettings(ctx)
 	if err != nil {
 		log.Printf("[notify] failed to get notify settings: %v", err)
@@ -104,6 +142,10 @@ func (s *Service) Send(ctx context.Context, title, message string) {
 			log.Printf("[notify] failed to unmarshal channels: %v", err)
 			return
 		}
+	}
+	if !alertTypeEnabled(cc, eventType) {
+		log.Printf("[notify] skipped alert notification by type filter: %s", NormalizeAlertType(eventType))
+		return
 	}
 
 	// 1. Email 推送
@@ -318,7 +360,7 @@ func (s *Service) sendTelegram(configStr, text string) error {
 
 func (s *Service) sendServerChan(sckey, title, desp string) error {
 	apiURL := fmt.Sprintf("https://sctapi.ftqq.com/%s.send", sckey)
-	
+
 	formData := url.Values{}
 	formData.Set("title", title)
 	formData.Set("desp", desp)

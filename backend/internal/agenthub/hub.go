@@ -21,10 +21,10 @@ import (
 )
 
 const (
-	OnlineTTL      = 30 * time.Second
-	SweeperPeriod  = 10 * time.Second
-	OnlineKeyPref  = "agent:"
-	OnlineKeySuf   = ":online"
+	OnlineTTL     = 30 * time.Second
+	SweeperPeriod = 10 * time.Second
+	OnlineKeyPref = "agent:"
+	OnlineKeySuf  = ":online"
 )
 
 func onlineKey(id string) string { return OnlineKeyPref + id + OnlineKeySuf }
@@ -240,11 +240,11 @@ func (h *Hub) triggerOfflineAlert(ctx context.Context, serverID string) {
 
 	if h.notify != nil {
 		title := fmt.Sprintf("[%s] 紧急告警: 服务器离线", serverName)
-		h.notify.Send(ctx, title, plainMsg)
+		h.notify.SendAlert(ctx, "offline", title, plainMsg)
 	}
 }
 
-// GetServerName returns the cached server name for an active connection, 
+// GetServerName returns the cached server name for an active connection,
 // or falls back to DB query, or serverID as a last resort.
 func (h *Hub) GetServerName(ctx context.Context, serverID string) string {
 	h.mu.RLock()

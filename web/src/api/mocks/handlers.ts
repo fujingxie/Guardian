@@ -1,7 +1,9 @@
 import { http, HttpResponse, delay } from 'msw'
 import {
   MOCK_ACCESS_TOKEN,
+  buildAlertStats,
   buildAlerts,
+  buildAlertsTimeline,
   buildHardening,
   buildMetricSeries,
   servers,
@@ -122,6 +124,18 @@ export const handlers = [
     if (!authed(request)) return new HttpResponse(null, { status: 401 })
     await delay(180)
     return HttpResponse.json({ alerts: buildAlerts(params.id as string) })
+  }),
+
+  http.get('/api/servers/:id/alerts/timeline', async ({ request, params }) => {
+    if (!authed(request)) return new HttpResponse(null, { status: 401 })
+    await delay(150)
+    return HttpResponse.json({ timeline: buildAlertsTimeline(params.id as string) })
+  }),
+
+  http.get('/api/servers/:id/alerts/stats', async ({ request }) => {
+    if (!authed(request)) return new HttpResponse(null, { status: 401 })
+    await delay(150)
+    return HttpResponse.json(buildAlertStats())
   }),
 
   http.get('/api/settings/notifications', async ({ request }) => {
