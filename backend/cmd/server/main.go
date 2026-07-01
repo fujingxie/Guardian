@@ -97,10 +97,12 @@ func main() {
 	_ = srv.Shutdown(shutdownCtx)
 }
 
-// runMetricsCleanup 每小时清理 24h 前的指标点；启动时先跑一次。
+const metricsRetention = 7 * 24 * time.Hour
+
+// runMetricsCleanup 每小时清理 7 天前的指标点；启动时先跑一次。
 func runMetricsCleanup(ctx context.Context, m *store.Metrics) {
 	clean := func() {
-		cutoff := time.Now().UTC().Add(-24 * time.Hour)
+		cutoff := time.Now().UTC().Add(-metricsRetention)
 		n, err := m.DeleteOlderThan(ctx, cutoff)
 		if err != nil {
 			log.Printf("[guardian] metrics cleanup: %v", err)
@@ -141,7 +143,7 @@ func runDeadmanSwitchSweeper(ctx context.Context, s *store.Hardening, hub *agent
 		}
 		for _, j := range jobs {
 			log.Printf("[deadman] automatically rolling back job %s (server: %s, key: %s) due to confirm timeout", j.ID, j.ServerID, j.ItemKey)
-			
+
 			// 数据库置为 rolledback
 			if err := s.UpdateJobStatus(ctx, j.ID, "rolledback", nil); err != nil {
 				log.Printf("[deadman] UpdateJobStatus %s to rolledback error: %v", j.ID, err)

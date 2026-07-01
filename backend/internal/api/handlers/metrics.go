@@ -12,24 +12,48 @@ type MetricsHandler struct {
 	Store *store.Metrics
 }
 
+const maxMetricResponsePoints = 600
+
 // GET /api/servers/:id/metrics?range=24h
 func (h *MetricsHandler) List(c *gin.Context) {
 	id := c.Param("id")
 	rng := c.DefaultQuery("range", "24h")
-	d, err := time.ParseDuration(rng)
-	if err != nil || d <= 0 || d > 7*24*time.Hour {
-		d = 24 * time.Hour
-	}
+	d := parseMetricRange(rng)
 	points, err := h.Store.ListRange(c.Request.Context(), id, time.Now().UTC().Add(-d))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db"})
 		return
 	}
+	points = sampleMetricPoints(points, maxMetricResponsePoints)
 	out := make([]gin.H, 0, len(points))
 	for _, p := range points {
 		out = append(out, metricPointAPI(p))
 	}
 	c.JSON(http.StatusOK, gin.H{"points": out})
+}
+
+func parseMetricRange(rng string) time.Duration {
+	switch rng {
+	case "7d", "1w":
+		return 7 * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(rng)
+	if err != nil || d <= 0 || d > 7*24*time.Hour {
+		return 24 * time.Hour
+	}
+	return d
+}
+
+func sampleMetricPoints(points []store.MetricPoint, limit int) []store.MetricPoint {
+	if limit <= 0 || len(points) <= limit {
+		return points
+	}
+	out := make([]store.MetricPoint, 0, limit)
+	for i := 0; i < limit; i++ {
+		idx := i * (len(points) - 1) / (limit - 1)
+		out = append(out, points[idx])
+	}
+	return out
 }
 
 // metricPointAPI 转成前端 MetricPoint 形状：cpu/mem/disk 为百分比，netUp/netDown 为 MB/s。

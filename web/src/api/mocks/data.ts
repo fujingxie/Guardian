@@ -131,7 +131,8 @@ export function buildMetricSeries(serverId: string, range = '24h'): MetricPoint[
   const points: MetricPoint[] = []
   const now = Date.now()
   const totalMinutes = parseRangeMinutes(range)
-  const stepMinutes = totalMinutes <= 60 ? 2 : totalMinutes <= 360 ? 5 : 10
+  const stepMinutes =
+    totalMinutes <= 60 ? 2 : totalMinutes <= 360 ? 5 : totalMinutes <= 1440 ? 10 : 20
   const sampleCount = Math.floor(totalMinutes / stepMinutes)
   for (let i = sampleCount; i >= 0; i--) {
     const ts = new Date(now - i * stepMinutes * 60 * 1000).toISOString()
@@ -154,6 +155,10 @@ function parseRangeMinutes(range: string) {
   if (range.endsWith('h')) {
     const hours = Number(range.slice(0, -1))
     if (Number.isFinite(hours) && hours > 0) return hours * 60
+  }
+  if (range.endsWith('d')) {
+    const days = Number(range.slice(0, -1))
+    if (Number.isFinite(days) && days > 0) return days * 24 * 60
   }
   return 24 * 60
 }

@@ -28,6 +28,7 @@ docker compose up -d
 - Agent 不在容器内运行，需在目标服务器执行 `install.sh`
 
 - 监控 agent 心跳/在线状态（通过 agent heartbeat 接口）
+- 指标数据保留 7 天；`GET /api/servers/:id/metrics` 支持 `range=1h/6h/24h/7d`，后端返回前会抽样控制图表点数。
 - 定期检查 hardening 任务执行状态（DB 中的任务表）
 - 前端 mock 数据在生产环境应关闭（设置 VITE_USE_MOCKS=false）
 

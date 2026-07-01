@@ -27,12 +27,13 @@ interface Props {
   server: Server
 }
 
-type RangeKey = '1h' | '6h' | '24h'
+type RangeKey = '1h' | '6h' | '24h' | '7d'
 
 const ranges: Array<{ key: RangeKey; label: string }> = [
   { key: '1h', label: '1 小时' },
   { key: '6h', label: '6 小时' },
   { key: '24h', label: '24 小时' },
+  { key: '7d', label: '7 天' },
 ]
 
 export function OverviewTab({ server }: Props) {
@@ -434,6 +435,8 @@ function rangeLabel(range: RangeKey) {
       return '近 1 小时'
     case '6h':
       return '近 6 小时'
+    case '7d':
+      return '近 7 天'
     default:
       return '近 24 小时'
   }
